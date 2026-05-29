@@ -31,6 +31,7 @@ from .base import (
     UnsupportedFilterError,
     _IncludeSpec,
 )
+from .._sqlite_ro import open_ro
 
 logger = logging.getLogger(__name__)
 
@@ -456,7 +457,7 @@ def _vector_segment_id(palace_path: str, collection_name: str) -> Optional[str]:
     if not os.path.isfile(db_path):
         return None
     try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        conn = open_ro(db_path)
         try:
             row = conn.execute(
                 """
@@ -625,7 +626,7 @@ def _read_sync_threshold(palace_path: str, collection_name: str) -> int:
     if not os.path.isfile(db_path):
         return 1000
     try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        conn = open_ro(db_path)
         try:
             cur = conn.cursor()
             cur.execute(
@@ -745,7 +746,7 @@ def _sqlite_embedding_count(palace_path: str, collection_name: str) -> Optional[
     if not os.path.isfile(db_path):
         return None
     try:
-        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        conn = open_ro(db_path)
         try:
             row = conn.execute(
                 """
