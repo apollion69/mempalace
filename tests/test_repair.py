@@ -1619,6 +1619,47 @@ def test_extract_via_sqlite_missing_palace_yields_nothing(tmp_path):
     assert list(repair.extract_via_sqlite(str(empty), "mempalace_drawers")) == []
 
 
+def test_extract_via_sqlite_yields_before_later_rows_are_read(tmp_path, monkeypatch):
+    """The SQLite bypass must stream one embedding at a time.
+
+    A large repair source can have hundreds of thousands of metadata rows; a
+    regression back to collection-wide materialization would have to consume
+    the failing tail before yielding the first recoverable drawer.
+    """
+    (tmp_path / "chroma.sqlite3").write_text("")
+
+    class SegmentLookup:
+        def fetchone(self):
+            return ("metadata-segment",)
+
+    class FakeConn:
+        closed = False
+
+        def execute(self, sql, params=()):
+            if "SELECT s.id FROM segments" in sql:
+                return SegmentLookup()
+            if "SELECT e.embedding_id" in sql:
+                return self._metadata_rows()
+            raise AssertionError(f"unexpected SQL: {sql}")
+
+        def _metadata_rows(self):
+            yield ("drawer_1", "chroma:document", "doc 1", None, None, None)
+            yield ("drawer_1", "wing", "w", None, None, None)
+            yield ("drawer_2", "chroma:document", "doc 2", None, None, None)
+            raise RuntimeError("tail should not be read before first yield")
+
+        def close(self):
+            self.closed = True
+
+    fake_conn = FakeConn()
+    monkeypatch.setattr(repair, "open_ro", lambda *args, **kwargs: fake_conn)
+
+    rows = repair.extract_via_sqlite(str(tmp_path), "mempalace_drawers")
+    assert next(rows) == ("drawer_1", "doc 1", {"wing": "w"})
+    rows.close()
+    assert fake_conn.closed is True
+
+
 def test_rebuild_from_sqlite_roundtrips_via_real_chromadb(tmp_path):
     """End-to-end: seed source palace, rebuild into a fresh dest, then
     open dest with a fresh ChromaBackend and verify ``count()`` and

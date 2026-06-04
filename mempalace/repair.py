@@ -34,7 +34,6 @@ import os
 import shutil
 import sqlite3
 import time
-from collections import defaultdict
 from contextlib import closing
 from datetime import datetime
 import re
@@ -915,7 +914,7 @@ def _rebuild_one_collection(
             return upserted
         col.upsert(ids=list(ids), documents=list(docs), metadatas=list(metas))
         upserted += len(ids)
-        print(f"    upserted {upserted}")
+        print(f"    upserted {upserted}", flush=True)
         ids.clear()
         docs.clear()
         metas.clear()
@@ -1018,8 +1017,19 @@ def extract_via_sqlite(palace_path: str, collection_name: str) -> Iterator[tuple
             return
         segment_id = seg_row[0]
 
-        per_id: dict[str, dict] = defaultdict(dict)
-        order: list[str] = []
+        current_id: str | None = None
+        current_meta: dict = {}
+
+        def _emit_current() -> tuple[str, str, dict] | None:
+            nonlocal current_id, current_meta
+            if current_id is None:
+                return None
+            doc = current_meta.pop("chroma:document", "")
+            row = (current_id, doc, current_meta)
+            current_id = None
+            current_meta = {}
+            return row
+
         for emb_id, key, sv, iv, fv, bv in conn.execute(
             """
             SELECT e.embedding_id, em.key, em.string_value, em.int_value,
@@ -1027,25 +1037,30 @@ def extract_via_sqlite(palace_path: str, collection_name: str) -> Iterator[tuple
             FROM embedding_metadata em
             JOIN embeddings e ON em.id = e.id
             WHERE e.segment_id = ?
-            ORDER BY em.id
+            ORDER BY e.id, em.rowid
             """,
             (segment_id,),
         ):
-            if emb_id not in per_id:
-                order.append(emb_id)
-            if sv is not None:
-                per_id[emb_id][key] = sv
-            elif iv is not None:
-                per_id[emb_id][key] = iv
-            elif fv is not None:
-                per_id[emb_id][key] = fv
-            elif bv is not None:
-                per_id[emb_id][key] = bool(bv)
+            if current_id is None:
+                current_id = emb_id
+            elif emb_id != current_id:
+                emitted = _emit_current()
+                if emitted is not None:
+                    yield emitted
+                current_id = emb_id
 
-        for emb_id in order:
-            kv = per_id[emb_id]
-            doc = kv.pop("chroma:document", "")
-            yield emb_id, doc, kv
+            if sv is not None:
+                current_meta[key] = sv
+            elif iv is not None:
+                current_meta[key] = iv
+            elif fv is not None:
+                current_meta[key] = fv
+            elif bv is not None:
+                current_meta[key] = bool(bv)
+
+        emitted = _emit_current()
+        if emitted is not None:
+            yield emitted
     finally:
         conn.close()
 
@@ -1134,11 +1149,11 @@ def rebuild_from_sqlite(
 
     in_place = source_palace == dest_palace
 
-    print(f"\n{'=' * 55}")
-    print("  MemPalace Repair — Rebuild from SQLite")
-    print(f"{'=' * 55}\n")
-    print(f"  Source: {source_palace}")
-    print(f"  Dest:   {dest_palace}")
+    print(f"\n{'=' * 55}", flush=True)
+    print("  MemPalace Repair — Rebuild from SQLite", flush=True)
+    print(f"{'=' * 55}\n", flush=True)
+    print(f"  Source: {source_palace}", flush=True)
+    print(f"  Dest:   {dest_palace}", flush=True)
 
     # Validate source BEFORE any destructive moves. An earlier draft
     # archived the dest first and surfaced the missing-chroma.sqlite3
@@ -1151,22 +1166,24 @@ def rebuild_from_sqlite(
                 "\n  Source and dest are the same path. Pass "
                 "archive_existing_dest=True (CLI: --archive-existing) to move "
                 "the existing palace aside, or pass a different source_palace= "
-                "(CLI: --source)."
+                "(CLI: --source).",
+                flush=True,
             )
             return {}
         if not os.path.isfile(src_db):
-            print(f"\n  Source palace has no chroma.sqlite3 at {src_db}")
+            print(f"\n  Source palace has no chroma.sqlite3 at {src_db}", flush=True)
             return {}
     else:
         if not os.path.isfile(src_db):
-            print(f"\n  Source palace has no chroma.sqlite3 at {src_db}")
+            print(f"\n  Source palace has no chroma.sqlite3 at {src_db}", flush=True)
             return {}
         if os.path.exists(dest_palace):
             print(
                 f"\n  Refusing to rebuild into existing path: {dest_palace}\n"
                 "  Move it aside, pass a different dest, or set "
                 "archive_existing_dest=True if rebuilding in place "
-                "(source_palace == dest_palace)."
+                "(source_palace == dest_palace).",
+                flush=True,
             )
             return {}
 
@@ -1174,7 +1191,7 @@ def rebuild_from_sqlite(
     if in_place:
         ts = datetime.now().strftime("%Y%m%d-%H%M%S")
         archive_path = f"{dest_palace}.pre-rebuild-{ts}"
-        print(f"  Archiving {dest_palace} → {archive_path}")
+        print(f"  Archiving {dest_palace} → {archive_path}", flush=True)
         shutil.move(dest_palace, archive_path)
         source_palace = archive_path
         src_db = os.path.join(source_palace, "chroma.sqlite3")
@@ -1192,7 +1209,8 @@ def rebuild_from_sqlite(
         except Exception as exc:  # noqa: BLE001
             print(
                 f"  Warning: could not clear chromadb system cache ({exc!r}); "
-                "in-place rebuild may fail with 'Collection already exists'."
+                "in-place rebuild may fail with 'Collection already exists'.",
+                flush=True,
             )
 
     os.makedirs(dest_palace, exist_ok=True)
@@ -1210,7 +1228,7 @@ def rebuild_from_sqlite(
     counts: dict[str, int] = {}
     try:
         for cname in _recoverable_collections():
-            print(f"\n  [{cname}]")
+            print(f"\n  [{cname}]", flush=True)
             upserted = _rebuild_one_collection(
                 backend=backend,
                 source_palace=source_palace,
@@ -1222,14 +1240,14 @@ def rebuild_from_sqlite(
             )
             counts[cname] = upserted
             if upserted == 0:
-                print(f"    no rows found for {cname} in source palace")
+                print(f"    no rows found for {cname} in source palace", flush=True)
             else:
-                print(f"    done: {upserted} rows in {cname}")
+                print(f"    done: {upserted} rows in {cname}", flush=True)
 
-        print(f"\n  Rebuild complete. {sum(counts.values())} total rows.")
+        print(f"\n  Rebuild complete. {sum(counts.values())} total rows.", flush=True)
         if archive_path is not None:
-            print(f"  Original palace archived at: {archive_path}")
-        print(f"{'=' * 55}\n")
+            print(f"  Original palace archived at: {archive_path}", flush=True)
+        print(f"{'=' * 55}\n", flush=True)
         return counts
     finally:
         backend.close()
