@@ -897,6 +897,7 @@ def _rebuild_one_collection(
     resume_existing_dest: bool = False,
     hnsw_batch_size: Optional[int] = None,
     hnsw_sync_threshold: Optional[int] = None,
+    hnsw_resize_factor: Optional[float] = None,
 ) -> int:
     """Stream rows for one collection from SQLite and upsert into a
     freshly-created collection at ``dest_palace``. Returns rows
@@ -941,6 +942,7 @@ def _rebuild_one_collection(
                     collection_name,
                     hnsw_batch_size=hnsw_batch_size,
                     hnsw_sync_threshold=hnsw_sync_threshold,
+                    hnsw_resize_factor=hnsw_resize_factor,
                 )
                 resume_skip = 0
             if resume_skip:
@@ -956,6 +958,7 @@ def _rebuild_one_collection(
                 collection_name,
                 hnsw_batch_size=hnsw_batch_size,
                 hnsw_sync_threshold=hnsw_sync_threshold,
+                hnsw_resize_factor=hnsw_resize_factor,
             )
 
         for source_index, (emb_id, doc, meta) in enumerate(
@@ -1111,6 +1114,7 @@ def rebuild_from_sqlite(
     resume_existing_dest: bool = False,
     hnsw_batch_size: Optional[int] = None,
     hnsw_sync_threshold: Optional[int] = None,
+    hnsw_resize_factor: Optional[float] = None,
 ) -> dict[str, int]:
     """Rebuild a palace by reading drawers from ``source_palace``'s
     ``chroma.sqlite3`` and upserting them into a fresh palace at
@@ -1284,6 +1288,7 @@ def rebuild_from_sqlite(
                 resume_existing_dest=resume_existing_dest,
                 hnsw_batch_size=hnsw_batch_size,
                 hnsw_sync_threshold=hnsw_sync_threshold,
+                hnsw_resize_factor=hnsw_resize_factor,
             )
             counts[cname] = upserted
             if upserted == 0:

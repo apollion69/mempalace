@@ -1464,6 +1464,7 @@ def test_cmd_repair_from_sqlite_resume_existing_passes_flag(mock_config_cls, tmp
         resume_existing=True,
         hnsw_batch_size=10_000,
         hnsw_sync_threshold=10_000,
+        hnsw_resize_factor=1.05,
         yes=True,
     )
     fake_counts = {"mempalace_drawers": 2, "mempalace_closets": 0}
@@ -1477,4 +1478,5 @@ def test_cmd_repair_from_sqlite_resume_existing_passes_flag(mock_config_cls, tmp
         resume_existing_dest=True,
         hnsw_batch_size=10_000,
         hnsw_sync_threshold=10_000,
+        hnsw_resize_factor=1.05,
     )

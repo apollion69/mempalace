@@ -1803,11 +1803,13 @@ def test_rebuild_one_collection_passes_repair_hnsw_limits(monkeypatch):
         counts_so_far={},
         hnsw_batch_size=10_000,
         hnsw_sync_threshold=10_000,
+        hnsw_resize_factor=1.05,
     )
 
     assert count == 1
     assert backend.create_kwargs["hnsw_batch_size"] == 10_000
     assert backend.create_kwargs["hnsw_sync_threshold"] == 10_000
+    assert backend.create_kwargs["hnsw_resize_factor"] == 1.05
 
 
 def test_rebuild_from_sqlite_in_place_archives_when_opted_in(tmp_path):

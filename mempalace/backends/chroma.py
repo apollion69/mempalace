@@ -2090,6 +2090,7 @@ class ChromaBackend(BaseBackend):
         *,
         hnsw_batch_size: Optional[int] = None,
         hnsw_sync_threshold: Optional[int] = None,
+        hnsw_resize_factor: Optional[float] = None,
     ) -> ChromaCollection:
         """Create (not get-or-create) ``collection_name`` with the given HNSW space."""
         ef = self._resolve_embedding_function()
@@ -2099,6 +2100,8 @@ class ChromaBackend(BaseBackend):
             hnsw_metadata["hnsw:batch_size"] = int(hnsw_batch_size)
         if hnsw_sync_threshold is not None:
             hnsw_metadata["hnsw:sync_threshold"] = int(hnsw_sync_threshold)
+        if hnsw_resize_factor is not None:
+            hnsw_metadata["hnsw:resize_factor"] = float(hnsw_resize_factor)
         collection = self._client(palace_path).create_collection(
             collection_name,
             metadata={
