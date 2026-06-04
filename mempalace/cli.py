@@ -888,6 +888,7 @@ def cmd_repair(args):
             os.path.abspath(os.path.expanduser(source_path)) if source_path else palace_path
         )
         archive_existing = getattr(args, "archive_existing", False)
+        resume_existing = getattr(args, "resume_existing", False)
 
         # Gate any path that touches the user's existing palace dir
         # behind confirm_destructive_action. The legacy mode already
@@ -909,6 +910,7 @@ def cmd_repair(args):
                 source_palace=source_path,
                 dest_palace=palace_path,
                 archive_existing_dest=archive_existing,
+                resume_existing_dest=resume_existing,
             )
         except RebuildPartialError as exc:
             # The error itself was already printed by rebuild_from_sqlite
@@ -1615,6 +1617,15 @@ def main():
             "For --mode from-sqlite when --source equals --palace: rename the "
             "existing palace to <palace>.pre-rebuild-<timestamp> before "
             "rebuilding so the corrupt copy is preserved."
+        ),
+    )
+    p_repair.add_argument(
+        "--resume-existing",
+        action="store_true",
+        help=(
+            "For --mode from-sqlite with an existing non-source --palace path: "
+            "continue a previously interrupted partial rebuild by skipping rows "
+            "already present in the destination."
         ),
     )
     p_repair.add_argument(

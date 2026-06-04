@@ -894,6 +894,7 @@ def _rebuild_one_collection(
     batch_size: int,
     archive_path: Optional[str],
     counts_so_far: dict[str, int],
+    resume_existing_dest: bool = False,
 ) -> int:
     """Stream rows for one collection from SQLite and upsert into a
     freshly-created collection at ``dest_palace``. Returns rows
@@ -906,6 +907,7 @@ def _rebuild_one_collection(
     docs: list[str] = []
     metas: list[dict] = []
     upserted = 0
+    resume_skip = 0
     col = None
 
     def _flush() -> int:
@@ -927,9 +929,28 @@ def _rebuild_one_collection(
         # reported as a structured ``RebuildPartialError`` carrying
         # ``archive_path`` — instead of an unstructured exception that
         # strands the user without recovery instructions.
-        col = backend.create_collection(dest_palace, collection_name)
+        if resume_existing_dest:
+            resume_skip = sum(1 for _ in extract_via_sqlite(dest_palace, collection_name))
+            try:
+                col = backend.get_collection(dest_palace, collection_name)
+            except Exception:  # noqa: BLE001 — collection absent in an existing partial dest
+                col = backend.create_collection(dest_palace, collection_name)
+                resume_skip = 0
+            if resume_skip:
+                upserted = resume_skip
+                print(
+                    f"    resume-existing: {resume_skip} rows already present; "
+                    "skipping source prefix",
+                    flush=True,
+                )
+        else:
+            col = backend.create_collection(dest_palace, collection_name)
 
-        for emb_id, doc, meta in extract_via_sqlite(source_palace, collection_name):
+        for source_index, (emb_id, doc, meta) in enumerate(
+            extract_via_sqlite(source_palace, collection_name), start=1
+        ):
+            if source_index <= resume_skip:
+                continue
             ids.append(emb_id)
             docs.append(doc or "")
             # chromadb 1.5.x rejects both None and empty-dict entries in
@@ -1075,6 +1096,7 @@ def rebuild_from_sqlite(
     *,
     archive_existing_dest: bool = False,
     batch_size: int = 1000,
+    resume_existing_dest: bool = False,
 ) -> dict[str, int]:
     """Rebuild a palace by reading drawers from ``source_palace``'s
     ``chroma.sqlite3`` and upserting them into a fresh palace at
@@ -1097,15 +1119,19 @@ def rebuild_from_sqlite(
     embedding model is deterministic — same model + same document text
     yields semantically equivalent search results.
 
-    ``archive_existing_dest`` controls behavior when ``dest_palace``
-    already exists:
+    ``archive_existing_dest`` and ``resume_existing_dest`` control behavior
+    when ``dest_palace`` already exists:
 
     * ``False`` (default) — refuse with a clear message. Callers must
       manually move the existing palace aside first.
-    * ``True`` — rename ``dest_palace`` to
+    * ``archive_existing_dest=True`` — rename ``dest_palace`` to
       ``<dest_palace>.pre-rebuild-<timestamp>`` and read from there
       instead. Used by the in-place CLI flow where ``--source`` defaults
       to the same path as ``--palace``.
+    * ``resume_existing_dest=True`` — continue a previously interrupted
+      non-in-place rebuild into an existing partial dest. Existing row
+      counts are read from dest SQLite and the same source prefix is
+      skipped before new upserts.
 
     Returns a ``{collection_name: row_count}`` dict so callers (CLI,
     tests) can verify the per-collection rebuild count without parsing
@@ -1181,7 +1207,7 @@ def rebuild_from_sqlite(
         if not os.path.isfile(src_db):
             print(f"\n  Source palace has no chroma.sqlite3 at {src_db}", flush=True)
             return {}
-        if os.path.exists(dest_palace):
+        if os.path.exists(dest_palace) and not resume_existing_dest:
             print(
                 f"\n  Refusing to rebuild into existing path: {dest_palace}\n"
                 "  Move it aside, pass a different dest, or set "
@@ -1241,6 +1267,7 @@ def rebuild_from_sqlite(
                 batch_size=batch_size,
                 archive_path=archive_path,
                 counts_so_far=counts,
+                resume_existing_dest=resume_existing_dest,
             )
             counts[cname] = upserted
             if upserted == 0:

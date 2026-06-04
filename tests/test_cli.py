@@ -1446,3 +1446,31 @@ def test_cmd_repair_from_sqlite_success_does_not_exit(mock_config_cls, tmp_path)
     with patch("mempalace.repair.rebuild_from_sqlite", return_value=fake_counts):
         # Should return cleanly; no SystemExit raised.
         cmd_repair(args)
+
+
+@patch("mempalace.cli.MempalaceConfig")
+def test_cmd_repair_from_sqlite_resume_existing_passes_flag(mock_config_cls, tmp_path):
+    palace_dir = tmp_path / "palace"
+    source_dir = tmp_path / "source"
+    palace_dir.mkdir()
+    source_dir.mkdir()
+    mock_config_cls.return_value.palace_path = str(palace_dir)
+
+    args = argparse.Namespace(
+        palace=str(palace_dir),
+        mode="from-sqlite",
+        source=str(source_dir),
+        archive_existing=False,
+        resume_existing=True,
+        yes=True,
+    )
+    fake_counts = {"mempalace_drawers": 2, "mempalace_closets": 0}
+    with patch("mempalace.repair.rebuild_from_sqlite", return_value=fake_counts) as rebuild:
+        cmd_repair(args)
+
+    rebuild.assert_called_once_with(
+        source_palace=os.path.abspath(str(source_dir)),
+        dest_palace=os.path.abspath(str(palace_dir)),
+        archive_existing_dest=False,
+        resume_existing_dest=True,
+    )

@@ -1738,6 +1738,37 @@ def test_rebuild_from_sqlite_refuses_existing_dest(tmp_path):
     assert not (dest / "chroma.sqlite3").exists()
 
 
+def test_rebuild_from_sqlite_resume_existing_dest_continues_partial(tmp_path):
+    """Resume mode keeps partial rebuild work instead of starting over.
+
+    The long-running harness can terminate a from-sqlite rebuild after many
+    successful batches. Resume mode reads the partial dest count and skips that
+    source prefix before continuing.
+    """
+    from mempalace.backends.chroma import ChromaBackend
+
+    source = tmp_path / "source"
+    dest = tmp_path / "dest"
+    rows = [(f"d{i}", f"body {i}", {"wing": "w", "room": "r"}) for i in range(6)]
+    _seed_palace(source, "mempalace_drawers", rows)
+    _seed_palace(dest, "mempalace_drawers", rows[:2])
+
+    counts = repair.rebuild_from_sqlite(
+        str(source),
+        str(dest),
+        resume_existing_dest=True,
+        batch_size=2,
+    )
+
+    assert counts["mempalace_drawers"] == 6
+    backend = ChromaBackend()
+    drawers = backend.get_collection(str(dest), "mempalace_drawers")
+    assert drawers.count() == 6
+    one = drawers.get(ids=["d5"], include=["documents", "metadatas"])
+    assert one["documents"] == ["body 5"]
+    assert one["metadatas"][0] == {"wing": "w", "room": "r"}
+
+
 def test_rebuild_from_sqlite_in_place_archives_when_opted_in(tmp_path):
     """In-place rebuild (source == dest) with ``archive_existing_dest=True``
     must move the original aside to ``<dest>.pre-rebuild-<ts>`` and read
