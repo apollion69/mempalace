@@ -1652,12 +1652,19 @@ def test_extract_via_sqlite_yields_before_later_rows_are_read(tmp_path, monkeypa
             self.closed = True
 
     fake_conn = FakeConn()
-    monkeypatch.setattr(repair, "open_ro", lambda *args, **kwargs: fake_conn)
+    open_calls = []
+
+    def fake_open_ro(*args, **kwargs):
+        open_calls.append((args, kwargs))
+        return fake_conn
+
+    monkeypatch.setattr(repair, "open_ro", fake_open_ro)
 
     rows = repair.extract_via_sqlite(str(tmp_path), "mempalace_drawers")
     assert next(rows) == ("drawer_1", "doc 1", {"wing": "w"})
     rows.close()
     assert fake_conn.closed is True
+    assert open_calls[0][1]["deadline_s"] is None
 
 
 def test_rebuild_from_sqlite_roundtrips_via_real_chromadb(tmp_path):

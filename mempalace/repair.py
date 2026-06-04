@@ -1003,7 +1003,11 @@ def extract_via_sqlite(palace_path: str, collection_name: str) -> Iterator[tuple
     if not os.path.isfile(sqlite_path):
         return
 
-    conn = open_ro(sqlite_path, deadline_s=120.0)
+    # Recovery extraction is a batch stream consumed between slow Chroma upsert
+    # calls. A single SQLite cursor can legitimately stay open for the full
+    # rebuild, so the interactive statement deadline would interrupt a healthy
+    # repair while the consumer is upserting a previous batch.
+    conn = open_ro(sqlite_path, deadline_s=None)
     try:
         seg_row = conn.execute(
             """
