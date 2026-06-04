@@ -889,6 +889,8 @@ def cmd_repair(args):
         )
         archive_existing = getattr(args, "archive_existing", False)
         resume_existing = getattr(args, "resume_existing", False)
+        hnsw_batch_size = getattr(args, "hnsw_batch_size", None)
+        hnsw_sync_threshold = getattr(args, "hnsw_sync_threshold", None)
 
         # Gate any path that touches the user's existing palace dir
         # behind confirm_destructive_action. The legacy mode already
@@ -911,6 +913,8 @@ def cmd_repair(args):
                 dest_palace=palace_path,
                 archive_existing_dest=archive_existing,
                 resume_existing_dest=resume_existing,
+                hnsw_batch_size=hnsw_batch_size,
+                hnsw_sync_threshold=hnsw_sync_threshold,
             )
         except RebuildPartialError as exc:
             # The error itself was already printed by rebuild_from_sqlite
@@ -1626,6 +1630,24 @@ def main():
             "For --mode from-sqlite with an existing non-source --palace path: "
             "continue a previously interrupted partial rebuild by skipping rows "
             "already present in the destination."
+        ),
+    )
+    p_repair.add_argument(
+        "--hnsw-batch-size",
+        type=int,
+        default=None,
+        help=(
+            "Override Chroma hnsw:batch_size for newly created collections in "
+            "--mode from-sqlite. Use a smaller value on memory-constrained rebuilds."
+        ),
+    )
+    p_repair.add_argument(
+        "--hnsw-sync-threshold",
+        type=int,
+        default=None,
+        help=(
+            "Override Chroma hnsw:sync_threshold for newly created collections in "
+            "--mode from-sqlite. Use a smaller value on memory-constrained rebuilds."
         ),
     )
     p_repair.add_argument(

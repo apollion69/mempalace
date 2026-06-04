@@ -2083,17 +2083,28 @@ class ChromaBackend(BaseBackend):
         self._client(palace_path).delete_collection(collection_name)
 
     def create_collection(
-        self, palace_path: str, collection_name: str, hnsw_space: str = "cosine"
+        self,
+        palace_path: str,
+        collection_name: str,
+        hnsw_space: str = "cosine",
+        *,
+        hnsw_batch_size: Optional[int] = None,
+        hnsw_sync_threshold: Optional[int] = None,
     ) -> ChromaCollection:
         """Create (not get-or-create) ``collection_name`` with the given HNSW space."""
         ef = self._resolve_embedding_function()
         ef_kwargs = {"embedding_function": ef} if ef is not None else {}
+        hnsw_metadata = dict(_HNSW_BLOAT_GUARD)
+        if hnsw_batch_size is not None:
+            hnsw_metadata["hnsw:batch_size"] = int(hnsw_batch_size)
+        if hnsw_sync_threshold is not None:
+            hnsw_metadata["hnsw:sync_threshold"] = int(hnsw_sync_threshold)
         collection = self._client(palace_path).create_collection(
             collection_name,
             metadata={
                 "hnsw:space": hnsw_space,
                 "hnsw:num_threads": 1,
-                **_HNSW_BLOAT_GUARD,
+                **hnsw_metadata,
             },
             **ef_kwargs,
         )

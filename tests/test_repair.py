@@ -1769,6 +1769,47 @@ def test_rebuild_from_sqlite_resume_existing_dest_continues_partial(tmp_path):
     assert one["metadatas"][0] == {"wing": "w", "room": "r"}
 
 
+def test_rebuild_one_collection_passes_repair_hnsw_limits(monkeypatch):
+    class FakeCollection:
+        def __init__(self):
+            self.rows = []
+
+        def upsert(self, *, ids, documents, metadatas):
+            self.rows.extend(ids)
+
+    class FakeBackend:
+        def __init__(self):
+            self.create_kwargs = None
+            self.collection = FakeCollection()
+
+        def create_collection(self, palace_path, collection_name, **kwargs):
+            self.create_kwargs = kwargs
+            return self.collection
+
+    backend = FakeBackend()
+    monkeypatch.setattr(
+        repair,
+        "extract_via_sqlite",
+        lambda *args, **kwargs: iter([("d1", "doc", {"wing": "w"})]),
+    )
+
+    count = repair._rebuild_one_collection(
+        backend=backend,
+        source_palace="/source",
+        dest_palace="/dest",
+        collection_name="mempalace_drawers",
+        batch_size=1000,
+        archive_path=None,
+        counts_so_far={},
+        hnsw_batch_size=10_000,
+        hnsw_sync_threshold=10_000,
+    )
+
+    assert count == 1
+    assert backend.create_kwargs["hnsw_batch_size"] == 10_000
+    assert backend.create_kwargs["hnsw_sync_threshold"] == 10_000
+
+
 def test_rebuild_from_sqlite_in_place_archives_when_opted_in(tmp_path):
     """In-place rebuild (source == dest) with ``archive_existing_dest=True``
     must move the original aside to ``<dest>.pre-rebuild-<ts>`` and read

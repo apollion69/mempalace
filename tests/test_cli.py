@@ -1462,6 +1462,8 @@ def test_cmd_repair_from_sqlite_resume_existing_passes_flag(mock_config_cls, tmp
         source=str(source_dir),
         archive_existing=False,
         resume_existing=True,
+        hnsw_batch_size=10_000,
+        hnsw_sync_threshold=10_000,
         yes=True,
     )
     fake_counts = {"mempalace_drawers": 2, "mempalace_closets": 0}
@@ -1473,4 +1475,6 @@ def test_cmd_repair_from_sqlite_resume_existing_passes_flag(mock_config_cls, tmp
         dest_palace=os.path.abspath(str(palace_dir)),
         archive_existing_dest=False,
         resume_existing_dest=True,
+        hnsw_batch_size=10_000,
+        hnsw_sync_threshold=10_000,
     )

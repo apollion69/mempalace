@@ -895,6 +895,8 @@ def _rebuild_one_collection(
     archive_path: Optional[str],
     counts_so_far: dict[str, int],
     resume_existing_dest: bool = False,
+    hnsw_batch_size: Optional[int] = None,
+    hnsw_sync_threshold: Optional[int] = None,
 ) -> int:
     """Stream rows for one collection from SQLite and upsert into a
     freshly-created collection at ``dest_palace``. Returns rows
@@ -934,7 +936,12 @@ def _rebuild_one_collection(
             try:
                 col = backend.get_collection(dest_palace, collection_name)
             except Exception:  # noqa: BLE001 — collection absent in an existing partial dest
-                col = backend.create_collection(dest_palace, collection_name)
+                col = backend.create_collection(
+                    dest_palace,
+                    collection_name,
+                    hnsw_batch_size=hnsw_batch_size,
+                    hnsw_sync_threshold=hnsw_sync_threshold,
+                )
                 resume_skip = 0
             if resume_skip:
                 upserted = resume_skip
@@ -944,7 +951,12 @@ def _rebuild_one_collection(
                     flush=True,
                 )
         else:
-            col = backend.create_collection(dest_palace, collection_name)
+            col = backend.create_collection(
+                dest_palace,
+                collection_name,
+                hnsw_batch_size=hnsw_batch_size,
+                hnsw_sync_threshold=hnsw_sync_threshold,
+            )
 
         for source_index, (emb_id, doc, meta) in enumerate(
             extract_via_sqlite(source_palace, collection_name), start=1
@@ -1097,6 +1109,8 @@ def rebuild_from_sqlite(
     archive_existing_dest: bool = False,
     batch_size: int = 1000,
     resume_existing_dest: bool = False,
+    hnsw_batch_size: Optional[int] = None,
+    hnsw_sync_threshold: Optional[int] = None,
 ) -> dict[str, int]:
     """Rebuild a palace by reading drawers from ``source_palace``'s
     ``chroma.sqlite3`` and upserting them into a fresh palace at
@@ -1268,6 +1282,8 @@ def rebuild_from_sqlite(
                 archive_path=archive_path,
                 counts_so_far=counts,
                 resume_existing_dest=resume_existing_dest,
+                hnsw_batch_size=hnsw_batch_size,
+                hnsw_sync_threshold=hnsw_sync_threshold,
             )
             counts[cname] = upserted
             if upserted == 0:
