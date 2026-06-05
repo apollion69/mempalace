@@ -145,6 +145,8 @@ _HNSW_BLOAT_GUARD = {
 # when data is trivially small) and _missing_dimensionality_appears_recoverable
 # (don't attempt recovery on segments with negligible data).
 _HNSW_MISSING_METADATA_DATA_FLOOR = 1024
+_HNSW_MISSING_DIMENSIONALITY_MIN_RECOVERABLE_LABELS = 50_000
+_HNSW_MISSING_DIMENSIONALITY_MAX_RECOVERABLE_LABEL_GAP = 10_000
 
 
 def _validate_where(where: Optional[dict]) -> None:
@@ -338,6 +340,20 @@ def _segment_appears_healthy(seg_dir: str) -> bool:
         size = os.path.getsize(meta_path)
         if size < 16:
             return False
+        try:
+            persisted = _SafePersistentDataUnpickler.load(meta_path)
+            dimensionality, id_to_label = _persisted_metadata_fields(persisted)
+            if (
+                dimensionality is None
+                and isinstance(id_to_label, dict)
+                and id_to_label
+                and _missing_dimensionality_appears_recoverable(
+                    persisted, id_to_label, seg_dir
+                )
+            ):
+                return True
+        except Exception:
+            logger.debug("_segment_appears_healthy metadata parse failed", exc_info=True)
         with open(meta_path, "rb") as f:
             head = f.read(2)
             f.seek(-1, 2)  # last byte
@@ -383,7 +399,7 @@ def quarantine_stale_hnsw(palace_path: str, stale_seconds: float = 300.0) -> lis
         return []
 
     for name in entries:
-        if "-" not in name or name.startswith(".") or ".drift-" in name:
+        if "-" not in name or name.startswith(".") or ".drift-" in name or ".corrupt-" in name:
             continue
 
         seg_dir = os.path.join(palace_path, name)
@@ -926,8 +942,17 @@ def _missing_dimensionality_appears_recoverable(
         return False
 
     label_count = len(id_to_label)
-    if int(total) != label_count or len(label_to_id) != label_count:
+    total_count = int(total)
+    if len(label_to_id) != label_count:
         return False
+    if total_count != label_count:
+        label_gap = total_count - label_count
+        if (
+            label_count < _HNSW_MISSING_DIMENSIONALITY_MIN_RECOVERABLE_LABELS
+            or label_gap < 0
+            or label_gap > _HNSW_MISSING_DIMENSIONALITY_MAX_RECOVERABLE_LABEL_GAP
+        ):
+            return False
     try:
         return all(label_to_id.get(label) == item_id for item_id, label in id_to_label.items())
     except TypeError:

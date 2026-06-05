@@ -1036,6 +1036,38 @@ def test_quarantine_stale_hnsw_leaves_healthy_segment_with_drift_alone(tmp_path)
     assert seg.exists()
 
 
+def test_quarantine_stale_hnsw_leaves_recoverable_missing_dimensionality_alone(tmp_path):
+    now = 1_700_000_000.0
+    palace, seg = _make_palace_with_segment(
+        tmp_path,
+        hnsw_mtime=now - 7200,
+        sqlite_mtime=now,
+        meta_bytes=None,
+    )
+    (seg / "data_level0.bin").write_bytes(b"x" * 2048)
+    (seg / "link_lists.bin").write_bytes(b"x" * 128)
+    id_to_label = {f"id_{index}": index for index in range(50_000)}
+    label_to_id = {label: item_id for item_id, label in id_to_label.items()}
+    with open(seg / "index_metadata.pickle", "wb") as f:
+        pickle.dump(
+            {
+                "dimensionality": None,
+                "total_elements_added": 55_000,
+                "max_seq_id": None,
+                "id_to_label": id_to_label,
+                "label_to_id": label_to_id,
+                "id_to_seq_id": {},
+            },
+            f,
+        )
+    os.utime(seg / "data_level0.bin", (now - 7200, now - 7200))
+
+    moved = quarantine_stale_hnsw(str(palace), stale_seconds=3600.0)
+
+    assert moved == []
+    assert seg.exists()
+
+
 def test_quarantine_stale_hnsw_leaves_empty_segment_without_metadata_alone(tmp_path):
     """Missing metadata is okay only when the segment has no meaningful data yet."""
 
@@ -1147,6 +1179,24 @@ def test_quarantine_stale_hnsw_skips_already_quarantined(tmp_path):
     moved = quarantine_stale_hnsw(str(palace), stale_seconds=3600.0)
     assert moved == []
     assert drift.exists()
+
+
+def test_quarantine_stale_hnsw_skips_corrupt_forensics_dir(tmp_path):
+    now = 1_700_000_000.0
+    palace = tmp_path / "palace"
+    palace.mkdir()
+    (palace / "chroma.sqlite3").write_text("")
+    corrupt = palace / "abcd-1234.corrupt-20260605-000000"
+    corrupt.mkdir()
+    (corrupt / "data_level0.bin").write_text("")
+    (corrupt / "index_metadata.pickle").write_bytes(_CORRUPT_META)
+    os.utime(corrupt / "data_level0.bin", (now - 99999, now - 99999))
+    os.utime(palace / "chroma.sqlite3", (now, now))
+
+    moved = quarantine_stale_hnsw(str(palace), stale_seconds=3600.0)
+
+    assert moved == []
+    assert corrupt.exists()
 
 
 # ── make_client cold-start gate ──────────────────────────────────────────
@@ -1456,6 +1506,34 @@ def test_quarantine_invalid_hnsw_metadata_keeps_consistent_missing_dimensionalit
                 "max_seq_id": None,
                 "id_to_label": {"a": 1, "b": 2},
                 "label_to_id": {1: "a", 2: "b"},
+                "id_to_seq_id": {},
+            },
+            f,
+        )
+
+    moved = quarantine_invalid_hnsw_metadata(str(palace))
+
+    assert moved == []
+    assert seg.exists()
+
+
+def test_quarantine_invalid_hnsw_metadata_keeps_large_flush_lag_missing_dimensionality(tmp_path):
+    palace = tmp_path / "palace"
+    palace.mkdir()
+    seg = palace / "abcd-1234-5678"
+    seg.mkdir()
+    (seg / "data_level0.bin").write_bytes(b"x" * 2048)
+    (seg / "link_lists.bin").write_bytes(b"x" * 128)
+    id_to_label = {f"id_{index}": index for index in range(50_000)}
+    label_to_id = {label: item_id for item_id, label in id_to_label.items()}
+    with open(seg / "index_metadata.pickle", "wb") as f:
+        pickle.dump(
+            {
+                "dimensionality": None,
+                "total_elements_added": 55_000,
+                "max_seq_id": None,
+                "id_to_label": id_to_label,
+                "label_to_id": label_to_id,
                 "id_to_seq_id": {},
             },
             f,
