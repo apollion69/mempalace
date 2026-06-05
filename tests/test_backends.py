@@ -1319,8 +1319,8 @@ def test_client_quarantines_corrupt_segment_on_first_open(tmp_path, monkeypatch)
         backend.close()
 
     assert not seg.exists(), "_client() should have quarantined the corrupt segment"
-    drift_dirs = [p for p in palace.iterdir() if ".drift-" in p.name]
-    assert len(drift_dirs) == 1
+    corrupt_dirs = [p for p in palace.iterdir() if ".corrupt-" in p.name]
+    assert len(corrupt_dirs) == 1
 
 
 def test_client_quarantines_only_on_first_call_per_palace(tmp_path, monkeypatch):
