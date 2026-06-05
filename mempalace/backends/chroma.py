@@ -146,11 +146,11 @@ _HNSW_BLOAT_GUARD = {
 # (don't attempt recovery on segments with negligible data).
 _HNSW_MISSING_METADATA_DATA_FLOOR = 1024
 _HNSW_MISSING_DIMENSIONALITY_MIN_RECOVERABLE_LABELS = 50_000
-# Chroma's configured sync_threshold is 50k for guarded collections. A
-# missing-dimensionality payload may legitimately have an unflushed label tail
-# smaller than that window; do not quarantine otherwise sane large segments for
-# ordinary async flush lag.
-_HNSW_MISSING_DIMENSIONALITY_MAX_RECOVERABLE_LABEL_GAP = 50_000
+# Chroma's configured sync_threshold is 50k for guarded collections, and the
+# read-only repair-status path treats up to 2 sync windows as ordinary flush
+# lag. Keep this pre-open quarantine guard aligned with that verdict so a
+# recoverable post-mine segment is not replaced by a one-element HNSW segment.
+_HNSW_MISSING_DIMENSIONALITY_MAX_RECOVERABLE_LABEL_GAP = 100_000
 
 
 def _validate_where(where: Optional[dict]) -> None:
