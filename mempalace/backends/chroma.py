@@ -146,7 +146,11 @@ _HNSW_BLOAT_GUARD = {
 # (don't attempt recovery on segments with negligible data).
 _HNSW_MISSING_METADATA_DATA_FLOOR = 1024
 _HNSW_MISSING_DIMENSIONALITY_MIN_RECOVERABLE_LABELS = 50_000
-_HNSW_MISSING_DIMENSIONALITY_MAX_RECOVERABLE_LABEL_GAP = 10_000
+# Chroma's configured sync_threshold is 50k for guarded collections. A
+# missing-dimensionality payload may legitimately have an unflushed label tail
+# smaller than that window; do not quarantine otherwise sane large segments for
+# ordinary async flush lag.
+_HNSW_MISSING_DIMENSIONALITY_MAX_RECOVERABLE_LABEL_GAP = 50_000
 
 
 def _validate_where(where: Optional[dict]) -> None:

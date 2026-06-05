@@ -1545,6 +1545,37 @@ def test_quarantine_invalid_hnsw_metadata_keeps_large_flush_lag_missing_dimensio
     assert seg.exists()
 
 
+def test_quarantine_invalid_hnsw_metadata_keeps_guarded_sync_window_missing_dimensionality(
+    tmp_path,
+):
+    """Large guarded collections can have >10k unflushed labels without corruption."""
+    palace = tmp_path / "palace"
+    palace.mkdir()
+    seg = palace / "abcd-1234-5678"
+    seg.mkdir()
+    (seg / "data_level0.bin").write_bytes(b"x" * 2048)
+    (seg / "link_lists.bin").write_bytes(b"x" * 128)
+    id_to_label = {f"id_{index}": index for index in range(50_000)}
+    label_to_id = {label: item_id for item_id, label in id_to_label.items()}
+    with open(seg / "index_metadata.pickle", "wb") as f:
+        pickle.dump(
+            {
+                "dimensionality": None,
+                "total_elements_added": 61_934,
+                "max_seq_id": None,
+                "id_to_label": id_to_label,
+                "label_to_id": label_to_id,
+                "id_to_seq_id": {},
+            },
+            f,
+        )
+
+    moved = quarantine_invalid_hnsw_metadata(str(palace))
+
+    assert moved == []
+    assert seg.exists()
+
+
 def test_quarantine_invalid_hnsw_metadata_renames_mismatched_missing_dimensionality(tmp_path):
     palace = tmp_path / "palace"
     palace.mkdir()
