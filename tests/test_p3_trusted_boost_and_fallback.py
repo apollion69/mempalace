@@ -173,6 +173,51 @@ def test_double_failure_logs_bm25_error(monkeypatch, caplog):
     assert any("bm25" in r.message.lower() for r in caplog.records), caplog.text
 
 
+class _FakeCol:
+    """Minimal Chroma-collection stand-in for the CLI search() print path."""
+
+    metadata = {"hnsw:space": "cosine"}
+
+    def query(self, **kwargs):
+        return {
+            "documents": [["zabbix dashboard prose"]],
+            "metadatas": [[{"wing": "cursor-sessions", "room": "technical",
+                            "source_file": "/x/session.jsonl", "chunk_index": 0}]],
+            "distances": [[0.3]],
+        }
+
+
+def test_cli_search_prints_bm25_augmented_hit_without_metadata_key(monkeypatch, capsys):
+    """Regression: BM25-augmented hits carry top-level wing/source_file but NO
+    `metadata` key. The CLI print loop must read them defensively and not raise
+    KeyError('metadata'). Pins the v3.4.0 CLI trusted-recall fix."""
+    monkeypatch.setattr(searcher, "_open_collection_or_explain", lambda *a, **k: _FakeCol())
+    monkeypatch.setattr(searcher, "get_collection", lambda *a, **k: _FakeCol())
+    monkeypatch.setattr(searcher, "_warn_if_legacy_metric", lambda *a, **k: None)
+
+    def fake_augment(hits, query, palace_path, wing, room, n_results, max_distance=0.0):
+        # Exact shape produced by _bm25_only_via_sqlite(_include_internal=True):
+        # no "metadata" key, distance=None.
+        hits.append({
+            "text": "card_id: z\nzabbix dashboard widget layout procedure",
+            "wing": "infra-facts",
+            "room": "general",
+            "source_file": "infra-zabbix.md",
+            "_source_file_full": "infra-zabbix.md",
+            "_chunk_index": 0,
+            "distance": None,
+            "bm25_score": 0.9,
+        })
+
+    monkeypatch.setattr(searcher, "_augment_with_trusted_wing_bm25", fake_augment)
+    # Must not raise KeyError; both hit shapes print.
+    searcher.search("zabbix dashboard widget layout", palace_path="/tmp/pal", n_results=5)
+    out = capsys.readouterr().out
+    assert "infra-facts" in out, out
+    assert "cursor-sessions" in out, out
+    assert "infra-zabbix.md" in out, out
+
+
 def test_filtered_fallback_reaches_bm25_on_retry_failure(monkeypatch):
     """If upstream's filter-fallback raises, we fall to BM25 and expose fallback state."""
     def boom(*a, **k):

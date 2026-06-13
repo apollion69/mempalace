@@ -397,11 +397,15 @@ def search(query: str, palace_path: str, wing: str = None, room: str = None, n_r
     _warn_if_legacy_metric(col)
 
     where = build_where_filter(wing, room)
+    retrieval_query = _clean_query_for_retrieval(query)
 
     try:
+        # Over-fetch so the rerank + trusted-wing augmentation have a pool to
+        # work over (the final list is truncated to n_results after ranking).
+        vector_n_results = max(n_results * 5, 25)
         kwargs = {
-            "query_texts": [query],
-            "n_results": n_results,
+            "query_texts": [retrieval_query],
+            "n_results": vector_n_results,
             "include": ["documents", "metadatas", "distances"],
         }
         if where:
@@ -430,10 +434,25 @@ def search(query: str, palace_path: str, wing: str = None, room: str = None, n_r
     # `_hybrid_rank`; do the same here so CLI results match what agents
     # see via `mempalace_search`.
     hits = [
-        {"text": doc or "", "distance": float(dist), "metadata": meta or {}}
+        {
+            "text": doc or "",
+            "distance": float(dist),
+            "metadata": meta or {},
+            "wing": (meta or {}).get("wing"),
+            "room": (meta or {}).get("room"),
+            "source_file": (meta or {}).get("source_file"),
+            "_source_file_full": (meta or {}).get("source_file"),
+            "_chunk_index": (meta or {}).get("chunk_index"),
+        }
         for doc, meta, dist in zip(docs, metas, dists)
     ]
-    hits = _hybrid_rank(hits, query)
+    # Always-on trusted recall on the CLI/recall path too (the MCP path does this
+    # via _finalize_candidate_hits): pull each trusted wing's BM25 top hits into
+    # the pool so they survive the rerank against the much larger session wings.
+    _augment_with_trusted_wing_bm25(
+        hits, retrieval_query, palace_path, wing, room, n_results, max_distance=0.0
+    )
+    hits = _dedupe_hits_by_source(_hybrid_rank(hits, retrieval_query))[:n_results]
 
     print(f"\n{'=' * 60}")
     print(f'  Results for: "{query}"')
@@ -444,12 +463,18 @@ def search(query: str, palace_path: str, wing: str = None, room: str = None, n_r
     print(f"{'=' * 60}\n")
 
     for i, hit in enumerate(hits, 1):
-        vec_sim = round(max(0.0, 1 - hit["distance"]), 3)
+        # BM25-only augmented hits carry distance=None (no vector signal) — the
+        # same convention _hybrid_rank uses; score them as vec_sim 0.0 here.
+        _dist = hit.get("distance")
+        vec_sim = round(max(0.0, 1 - _dist), 3) if _dist is not None else 0.0
         bm25 = hit.get("bm25_score", 0.0)
-        meta = hit["metadata"]
-        source = Path(meta.get("source_file", "?")).name
-        wing_name = meta.get("wing", "?")
-        room_name = meta.get("room", "?")
+        # Vector hits carry a `metadata` dict; BM25-augmented hits carry the
+        # same fields as top-level keys instead. Prefer top-level, fall back to
+        # metadata so both candidate shapes print cleanly.
+        meta = hit.get("metadata") or {}
+        source = Path(hit.get("source_file") or meta.get("source_file") or "?").name
+        wing_name = hit.get("wing") or meta.get("wing") or "?"
+        room_name = hit.get("room") or meta.get("room") or "?"
 
         print(f"  [{i}] {wing_name} / {room_name}")
         print(f"      Source: {source}")
