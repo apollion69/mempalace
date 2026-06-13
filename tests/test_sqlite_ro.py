@@ -134,7 +134,20 @@ def test_query_only_blocks_writes(tiny_db: str) -> None:
 # - placeholders: the canonical IN-list pattern -- ",".join(["?"]*n); the values
 #   are bound separately as a tuple (searcher.py meta_rows query). This is the
 #   one dynamic-SQL site the proposal explicitly blesses.
-_ALLOWED_SQL_INTERP = {"row_id_expr", "filter_sql", "placeholders"}
+# - limit_sql / order_expr: literal clause fragments built from constants
+#   (``"LIMIT ?"`` binds its value via ``?``; ``"e.created_at DESC"`` is a fixed
+#   ORDER BY). Added when the upstream FTS/lexical path landed (v3.4.0).
+# - value_columns: the metadata value-column list, filtered from the fixed tuple
+#   ("string_value","int_value","float_value","bool_value") against the live
+#   schema via PRAGMA table_info — schema identifiers, never user values.
+_ALLOWED_SQL_INTERP = {
+    "row_id_expr",
+    "filter_sql",
+    "placeholders",
+    "limit_sql",
+    "order_expr",
+    "value_columns",
+}
 
 _READ_PATH_MODULES = [
     _searcher_mod,
@@ -180,4 +193,15 @@ def _interp_name(node: ast.AST) -> str:
         return node.id
     if isinstance(node, ast.Attribute):
         return node.attr
+    # ", ".join(<Name>) — the blessed join-of-internal-tokens pattern. Resolve to
+    # the joined variable so its safety can be asserted via the allowlist rather
+    # than blanket-accepting every "<expr>".
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "join"
+        and node.args
+        and isinstance(node.args[0], ast.Name)
+    ):
+        return node.args[0].id
     return "<expr>"
