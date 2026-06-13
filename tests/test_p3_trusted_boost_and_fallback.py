@@ -84,6 +84,40 @@ def test_filtered_fallback_tries_upstream_retry_before_bm25(monkeypatch):
     assert res is not None
 
 
+def test_vector_path_failure_is_logged_even_when_bm25_recovers(monkeypatch, caplog):
+    """A vector-path exception must be logged (observability) even when the BM25
+    fallback recovers — so a programming error is never fully masked."""
+    def boom(*a, **k):
+        raise TypeError("renamed kwarg leaked")
+
+    monkeypatch.setattr(searcher, "_query_drawers_with_filter_fallback", boom)
+    monkeypatch.setattr(
+        searcher,
+        "_bm25_fallback_after_filtered_vector_error",
+        lambda *a, **k: {"results": [], "fallback_state": "active"},
+    )
+    with caplog.at_level("WARNING", logger="mempalace_mcp"):
+        searcher._query_drawers_or_bm25_fallback(
+            drawers_col=object(), query="q", palace_path="/nope", wing="infra-facts"
+        )
+    assert any("vector" in r.message.lower() for r in caplog.records), caplog.text
+
+
+def test_double_failure_logs_bm25_error(monkeypatch, caplog):
+    """When BM25 ALSO fails, the BM25 error must be logged, not silently dropped."""
+    monkeypatch.setattr(
+        searcher,
+        "_bm25_only_via_sqlite",
+        lambda *a, **k: {"error": "sqlite open failed: disk gone"},
+    )
+    with caplog.at_level("WARNING", logger="mempalace_mcp"):
+        out = searcher._bm25_fallback_after_filtered_vector_error(
+            RuntimeError("vec boom"), "q", "/nope", wing="infra-facts"
+        )
+    assert out is None
+    assert any("bm25" in r.message.lower() for r in caplog.records), caplog.text
+
+
 def test_filtered_fallback_reaches_bm25_on_retry_failure(monkeypatch):
     """If upstream's filter-fallback raises, we fall to BM25 and expose fallback state."""
     def boom(*a, **k):

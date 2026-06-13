@@ -981,6 +981,14 @@ def _bm25_fallback_after_filtered_vector_error(
         collection_name=collection_name,
     )
     if fallback.get("error"):
+        # Double failure: the vector path AND the BM25 fallback both failed.
+        # Surface the original vector error to the caller, but never drop the
+        # BM25 failure silently — log it so two-layer failures are traceable.
+        logger.warning(
+            "BM25 fallback also failed after vector error (%s): %s",
+            error,
+            fallback.get("error"),
+        )
         return None
     fallback["retrieval_path"] = "sqlite_bm25"
     fallback["fallback_state"] = "active"
@@ -1026,6 +1034,10 @@ def _query_drawers_or_bm25_fallback(
             None,
         )
     except Exception as e:
+        # Broad catch is intentional — backends raise heterogeneous index/filter
+        # errors. But log at WARNING so a programming error (TypeError, renamed
+        # kwarg, etc.) is never fully masked when the BM25 fallback recovers.
+        logger.warning("vector drawer query failed (%s); attempting BM25 fallback", e)
         fallback = _bm25_fallback_after_filtered_vector_error(
             e,
             query,
