@@ -44,6 +44,32 @@ class SearchError(Exception):
 
 _TOKEN_RE = re.compile(r"\w{2,}", re.UNICODE)
 
+# --- trusted-source ranking + query-noise strip (fork, re-layered on v3.4.0) ---
+# These ride on top of the upstream pluggable candidate union (strategy A): the
+# authority boost is applied in _hybrid_rank, so it works regardless of how
+# candidates were gathered (vector or lexical_search union).
+_MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]+\)")
+_URL_RE = re.compile(r"https?://\S+")
+_INFRA_CONTRACT_RE = re.compile(
+    r"AI agents:\s*read the Infrastructure contract(?:\s+before updating this page)?;?",
+    re.IGNORECASE,
+)
+_LOCAL_FALLBACK_RE = re.compile(
+    r"local fallback:\s*`?_shared/docs/wiki/infrastructure-agent-contract\.md`?\.?",
+    re.IGNORECASE,
+)
+_DOC_REFRESH_RE = re.compile(r"Documentation[- ]refresh[- ]ownership", re.IGNORECASE)
+_ARTICLE_REWORK_RE = re.compile(r"Статья требует переработки", re.IGNORECASE)
+_TRUSTED_RAW_WINGS = {
+    "infra-facts",
+    "systems-map",
+    "incidents-rca",
+    "policies-decisions",
+    "runbooks",
+    "holmes-context",
+}
+_CARD_ID_RE = re.compile(r"(?m)^\s*card_id\s*:", re.IGNORECASE)
+
 
 def _first_or_empty(results, key: str) -> list:
     """Return the first inner list of a query result field, or [].
@@ -131,6 +157,56 @@ def _bm25_scores(
     return scores
 
 
+def _result_metadata(result: dict) -> dict:
+    meta = result.get("metadata")
+    return meta if isinstance(meta, dict) else result
+
+
+def _trusted_source_boost(result: dict, query: str) -> float:
+    """Return a small ranking boost for trusted fact-card/canon hits.
+
+    The boost is gated by lexical overlap so trusted sources do not win on
+    authority alone; they must still match the user's query terms.
+    """
+    meta = _result_metadata(result)
+    wing = str(meta.get("wing") or result.get("wing") or "")
+    source = str(meta.get("source_file") or result.get("source_file") or "")
+    text = str(result.get("text") or "")
+    query_terms = set(_tokenize(query))
+    if not query_terms:
+        return 0.0
+
+    overlap = len(query_terms & set(_tokenize(text)))
+    required = min(2, len(query_terms))
+    if overlap < required:
+        return 0.0
+
+    looks_like_card = bool(_CARD_ID_RE.search(text)) or Path(source).name.startswith("infra-")
+    if wing in _TRUSTED_RAW_WINGS and looks_like_card:
+        return 0.75
+    if wing in _TRUSTED_RAW_WINGS:
+        return 0.55
+    if looks_like_card:
+        return 0.25
+    return 0.0
+
+
+def _clean_query_for_retrieval(query: str) -> str:
+    """Strip common documentation boilerplate before vector/BM25 retrieval."""
+    cleaned = _MARKDOWN_LINK_RE.sub(r"\1", query or "")
+    cleaned = _URL_RE.sub(" ", cleaned)
+    for pattern in (
+        _INFRA_CONTRACT_RE,
+        _LOCAL_FALLBACK_RE,
+        _DOC_REFRESH_RE,
+        _ARTICLE_REWORK_RE,
+    ):
+        cleaned = pattern.sub(" ", cleaned)
+    cleaned = re.sub(r"[>`*_#\[\]()]+", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" .;:-")
+    return cleaned or (query or "")
+
+
 def _hybrid_rank(
     results: list,
     query: str,
@@ -170,8 +246,10 @@ def _hybrid_rank(
             vec_sim = 0.0
         else:
             vec_sim = max(0.0, 1.0 - distance)
+        authority_boost = _trusted_source_boost(r, query)
         r["bm25_score"] = round(raw, 3)
-        scored.append((vector_weight * vec_sim + bm25_weight * norm, r))
+        r["authority_boost"] = round(authority_boost, 3)
+        scored.append((vector_weight * vec_sim + bm25_weight * norm + authority_boost, r))
 
     scored.sort(key=lambda pair: pair[0], reverse=True)
     results[:] = [r for _, r in scored]
@@ -875,6 +953,91 @@ def _open_search_collection(palace_path: str, collection_name: str):
         }
 
 
+def _bm25_fallback_after_filtered_vector_error(
+    error: Exception,
+    query: str,
+    palace_path: str,
+    wing: str = None,
+    room: str = None,
+    n_results: int = 5,
+    collection_name: str = None,
+) -> "dict | None":
+    """Use sqlite BM25 when Chroma vector search fails under metadata filters.
+
+    Chroma can fail in the vector+where path while the sqlite metadata and FTS
+    tables remain readable. Only scoped searches fall back here; unfiltered
+    vector errors keep their historical error behavior so transient-index retry
+    logic in the MCP layer still sees them.
+    """
+    if not (wing or room):
+        return None
+
+    fallback = _bm25_only_via_sqlite(
+        query,
+        palace_path,
+        wing=wing,
+        room=room,
+        n_results=n_results,
+        collection_name=collection_name,
+    )
+    if fallback.get("error"):
+        return None
+    fallback["retrieval_path"] = "sqlite_bm25"
+    fallback["fallback_state"] = "active"
+    fallback["fallback_reason"] = "vector_query_failed"
+    fallback["vector_error"] = str(error)
+    return fallback
+
+
+def _query_drawers_or_bm25_fallback(
+    drawers_col,
+    query: str,
+    palace_path: str,
+    wing: str = None,
+    room: str = None,
+    vector_n_results: int = 5,
+    fallback_n_results: int = 5,
+    collection_name: str = None,
+) -> tuple:
+    """Run drawer vector query with layered recovery (strategy A).
+
+    Recovery order, best signal first:
+      1. filtered vector query;
+      2. on a ChromaDB filter/index mismatch, upstream's unfiltered-vector +
+         Python post-filter retry (#1245) — stays in vector space;
+      3. only if that also raises, sqlite BM25 fallback — last resort that keeps
+         a scoped search answering when the vector path is unusable.
+    Returns ``(results, fallback_dict, error)``: exactly one is non-None.
+    """
+    where = build_where_filter(wing, room)
+    try:
+        dkwargs = {
+            "query_texts": [query],
+            "n_results": vector_n_results,
+            "include": ["documents", "metadatas", "distances"],
+        }
+        if where:
+            dkwargs["where"] = where
+        return (
+            _query_drawers_with_filter_fallback(
+                drawers_col, dkwargs, query, vector_n_results, wing, room
+            ),
+            None,
+            None,
+        )
+    except Exception as e:
+        fallback = _bm25_fallback_after_filtered_vector_error(
+            e,
+            query,
+            palace_path,
+            wing=wing,
+            room=room,
+            n_results=fallback_n_results,
+            collection_name=collection_name,
+        )
+        return None, fallback, e
+
+
 def _query_drawers_with_filter_fallback(drawers_col, dkwargs, query, n_results, wing, room):
     """Run the filtered drawer query, falling back to an unfiltered query plus a
     Python-side post-filter when ChromaDB raises on the filtered query.
@@ -992,19 +1155,20 @@ def search_memories(
     # This avoids the "weak-closets regression" where narrative content
     # produces low-signal closets (regex extraction matches few topics)
     # and closet-first routing hides drawers that direct search would find.
-    try:
-        dkwargs = {
-            "query_texts": [query],
-            "n_results": n_results * 3,  # over-fetch for re-ranking
-            "include": ["documents", "metadatas", "distances"],
-        }
-        if where:
-            dkwargs["where"] = where
-        drawer_results = _query_drawers_with_filter_fallback(
-            drawers_col, dkwargs, query, n_results, wing, room
-        )
-    except Exception as e:
-        return {"error": f"Search error: {e}"}
+    drawer_results, fallback, drawer_error = _query_drawers_or_bm25_fallback(
+        drawers_col,
+        query,
+        palace_path,
+        wing=wing,
+        room=room,
+        vector_n_results=n_results * 3,  # over-fetch for re-ranking
+        fallback_n_results=n_results,
+        collection_name=collection_name,
+    )
+    if fallback is not None:
+        return fallback
+    if drawer_error is not None:
+        return {"error": f"Search error: {drawer_error}"}
 
     # Gather closet hits (best-per-source) to build a boost lookup.
     closet_boost_by_source: dict = {}  # source_file -> (rank, closet_dist, preview)
