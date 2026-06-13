@@ -84,6 +84,61 @@ def test_filtered_fallback_tries_upstream_retry_before_bm25(monkeypatch):
     assert res is not None
 
 
+def test_trusted_wing_bm25_candidates_enter_pool_when_no_wing(monkeypatch):
+    """When no wing filter is set, BM25 candidates from each trusted wing must be
+    pulled into the rerank pool — otherwise tiny trusted wings (infra-facts: 125
+    drawers) are drowned by huge session wings in a global vector/union pool."""
+    pulled = []
+
+    def fake_bm25(query, palace_path, wing=None, room=None, n_results=5, _include_internal=False):
+        pulled.append(wing)
+        if wing == "infra-facts":
+            return {"results": [{
+                "text": "card_id: z\nzabbix dashboard widget layout",
+                "wing": "infra-facts",
+                "source_file": "infra-zabbix.md",
+                "_source_file_full": "infra-zabbix.md",
+                "_chunk_index": 0,
+                "metadata": {"wing": "infra-facts", "source_file": "infra-zabbix.md"},
+            }]}
+        return {"results": []}
+
+    monkeypatch.setattr(searcher, "_bm25_only_via_sqlite", fake_bm25)
+    hits = [{"text": "noise", "wing": "cursor-sessions", "distance": 0.3,
+             "_source_file_full": "s.jsonl", "_chunk_index": 1}]
+    searcher._augment_with_trusted_wing_bm25(
+        hits, "zabbix dashboard widget layout", "/p", wing=None, room=None,
+        n_results=5, max_distance=0.0,
+    )
+    assert "infra-facts" in pulled, "each trusted wing must be queried"
+    assert any(h.get("wing") == "infra-facts" for h in hits), "trusted card must enter the pool"
+    assert any(h.get("distance") is None for h in hits), "BM25-only additions carry distance=None"
+
+
+def test_trusted_wing_augment_skipped_when_wing_set(monkeypatch):
+    """An explicit wing filter means the caller already scoped — no trusted-wing pull."""
+    called = []
+    monkeypatch.setattr(searcher, "_bm25_only_via_sqlite",
+                        lambda *a, **k: called.append(1) or {"results": []})
+    hits = [{"text": "x", "wing": "general", "distance": 0.2}]
+    searcher._augment_with_trusted_wing_bm25(
+        hits, "q", "/p", wing="general", room=None, n_results=5, max_distance=0.0
+    )
+    assert called == [], "no trusted-wing pull when a wing filter is active"
+
+
+def test_trusted_wing_augment_skipped_under_max_distance(monkeypatch):
+    """A strict vector-distance bound must not be bypassed by distance=None BM25 adds."""
+    called = []
+    monkeypatch.setattr(searcher, "_bm25_only_via_sqlite",
+                        lambda *a, **k: called.append(1) or {"results": []})
+    hits = []
+    searcher._augment_with_trusted_wing_bm25(
+        hits, "q", "/p", wing=None, room=None, n_results=5, max_distance=0.4
+    )
+    assert called == [], "no BM25-only injection when max_distance > 0"
+
+
 def test_vector_path_failure_is_logged_even_when_bm25_recovers(monkeypatch, caplog):
     """A vector-path exception must be logged (observability) even when the BM25
     fallback recovers — so a programming error is never fully masked."""

@@ -840,12 +840,95 @@ def _apply_candidate_strategy(
         merger(hits, drawers_col, query, wing, room, n_results, max_distance=max_distance)
 
 
+def _source_identity(result: dict):
+    meta = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+    source = result.get("_source_file_full") or meta.get("source_file") or result.get("source_file")
+    return str(source) if source else None
+
+
+def _dedupe_hits_by_source(ranked_hits: list) -> list:
+    """Keep the best ranked hit per source file for concise raw results."""
+    seen = set()
+    deduped = []
+    for hit in ranked_hits:
+        key = _source_identity(hit)
+        if key and key in seen:
+            continue
+        if key:
+            seen.add(key)
+        deduped.append(hit)
+    return deduped
+
+
+def _candidate_dedup_key(entry: dict):
+    meta = entry.get("metadata") if isinstance(entry.get("metadata"), dict) else {}
+    full = entry.get("_source_file_full") or meta.get("source_file")
+    ci = entry.get("_chunk_index")
+    if ci is None:
+        ci = meta.get("chunk_index")
+    if full and ci is not None:
+        return (full, ci)
+    if entry.get("source_file"):
+        return entry.get("source_file")
+    return Path(full).name if full else None
+
+
+def _augment_with_trusted_wing_bm25(
+    hits: list,
+    query: str,
+    palace_path: str,
+    wing: str,
+    room: str,
+    n_results: int,
+    max_distance: float = 0.0,
+) -> None:
+    """Pull top-K BM25 candidates from each trusted wing into ``hits`` in place.
+
+    Always-on trusted recall (independent of ``candidate_strategy``): the global
+    lexical/vector candidate pool is dominated by the huge session wings, so tiny
+    trusted wings (e.g. ``infra-facts``) never surface there. We query each
+    trusted wing's BM25 directly so its top hits enter the rerank pool, where
+    ``_trusted_source_boost`` (in ``_hybrid_rank``) can promote them. Only runs
+    when no explicit wing filter is set and no strict ``max_distance`` bound is in
+    effect (distance=None BM25 adds would otherwise bypass that bound).
+    BM25-only additions are deduped chunk-precise against existing hits.
+    """
+    if max_distance > 0.0 or wing:
+        return
+
+    bm25_pool_size = max(n_results * 10, 50)
+    seen = {_candidate_dedup_key(h) for h in hits}
+    for trusted_wing in sorted(_TRUSTED_RAW_WINGS):
+        try:
+            extra = _bm25_only_via_sqlite(
+                query,
+                palace_path,
+                wing=trusted_wing,
+                room=room,
+                n_results=bm25_pool_size,
+                _include_internal=True,
+            ).get("results", [])
+        except Exception:
+            logger.debug("trusted-wing BM25 fetch failed for wing=%s", trusted_wing, exc_info=True)
+            continue
+        for bh in extra:
+            key = _candidate_dedup_key(bh)
+            if not key or key == "?" or key in seen:
+                continue
+            bh["distance"] = None
+            bh["effective_distance"] = None
+            bh["closet_boost"] = 0.0
+            hits.append(bh)
+            seen.add(key)
+
+
 def _finalize_candidate_hits(
     *,
     candidate_strategy: str,
     hits: list,
     drawers_col,
     query: str,
+    palace_path: str,
     wing: str,
     room: str,
     n_results: int,
@@ -869,7 +952,13 @@ def _finalize_candidate_hits(
             "hint": "Use candidate_strategy='vector' or select a backend that supports lexical search.",
         }
 
-    hits = _hybrid_rank(hits, query)[:n_results]
+    # Always-on trusted recall: pull each trusted wing's BM25 top hits into the
+    # pool so they survive the rerank against the much larger session wings.
+    _augment_with_trusted_wing_bm25(
+        hits, query, palace_path, wing, room, n_results, max_distance=max_distance
+    )
+
+    hits = _dedupe_hits_by_source(_hybrid_rank(hits, query))[:n_results]
     for h in hits:
         h.pop("_sort_key", None)
         h.pop("_source_file_full", None)
@@ -1340,6 +1429,7 @@ def search_memories(
         hits=hits,
         drawers_col=drawers_col,
         query=query,
+        palace_path=palace_path,
         wing=wing,
         room=room,
         n_results=n_results,
