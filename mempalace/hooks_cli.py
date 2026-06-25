@@ -313,6 +313,32 @@ def _mine_slot_timeout_secs() -> float:
     return _MINE_TIMEOUT_HOURS_DEFAULT * 3600
 
 
+# Minimum seconds between two mine spawns for the SAME target command. The
+# precompact/stop transcript-ingest re-mines the whole project transcript dir
+# on every hook fire; that cost is dominated by palace load (not file count),
+# so firing less often is the only lever. The per-target PID slot prevents
+# only *parallel* stacking, not back-to-back re-fires. Gated by env (default
+# 0 = disabled, preserving prior behaviour + tests); deployed hooks opt in via
+# MEMPALACE_MINE_DEBOUNCE_SECS.
+_MINE_DEBOUNCE_ENV = "MEMPALACE_MINE_DEBOUNCE_SECS"
+
+
+def _mine_debounce_secs() -> float:
+    """Return the per-target mine debounce window in seconds (0 = disabled)."""
+    raw = os.environ.get(_MINE_DEBOUNCE_ENV, "")
+    if raw:
+        try:
+            return max(0.0, float(raw))
+        except ValueError:
+            return 0.0
+    return 0.0
+
+
+def _mine_stamp_path(cmd: list[str]) -> Path:
+    """Per-target 'last spawn' timestamp file (sibling of the PID slot)."""
+    return _pid_file_for_cmd(cmd).with_suffix(".last")
+
+
 def _pid_file_for_cmd(cmd: list[str]) -> Path:
     """Return the per-target PID file path for a mine subcommand.
 
@@ -480,6 +506,16 @@ def _spawn_mine(cmd: list) -> None:
     """
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     log_path = STATE_DIR / "hook.log"
+    debounce = _mine_debounce_secs()
+    stamp = _mine_stamp_path(cmd) if debounce > 0 else None
+    if stamp is not None:
+        try:
+            elapsed = time.time() - float(stamp.read_text().strip())
+            if 0 <= elapsed < debounce:
+                _log(f"Skipping mine: debounced ({int(elapsed)}s < {int(debounce)}s)")
+                return
+        except (OSError, ValueError):
+            pass
     pid_file = _claim_mine_slot(cmd)
     if pid_file is None:
         _log(f"Skipping mine: target already running ({' '.join(cmd[-3:])})")
@@ -507,6 +543,11 @@ def _spawn_mine(cmd: list) -> None:
         pid_file.write_text(f"{proc.pid} {int(time.time())}")
     except OSError:
         pass
+    if stamp is not None:
+        try:
+            stamp.write_text(str(int(time.time())))
+        except OSError:
+            pass
 
 
 def _maybe_auto_ingest():

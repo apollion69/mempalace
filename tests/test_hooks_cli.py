@@ -1853,3 +1853,36 @@ def test_regular_file_at_palace_root_treated_as_absent(tmp_path, monkeypatch):
     # The stray file is left untouched; we never try to convert it.
     assert fake_root.is_file()
     assert fake_root.read_text() == "oops, this is a file not a directory"
+
+
+def test_spawn_mine_debounce_skips_recent_target(tmp_path, monkeypatch):
+    """With MEMPALACE_MINE_DEBOUNCE_SECS set, a fresh stamp skips the re-spawn."""
+    pid_dir = tmp_path / "mine_pids"
+    cmd = ["mempalace", "mine", "/tmp/proj", "--mode", "convos", "--wing", "sessions"]
+    monkeypatch.setenv("MEMPALACE_MINE_DEBOUNCE_SECS", "1800")
+    with patch("mempalace.hooks_cli.STATE_DIR", tmp_path):
+        with patch("mempalace.hooks_cli._MINE_PID_DIR", pid_dir):
+            with patch("mempalace.hooks_cli.subprocess.Popen") as mock_popen:
+                from mempalace.hooks_cli import _mine_stamp_path, _spawn_mine
+
+                mock_popen.return_value.pid = 9999
+                _spawn_mine(cmd)  # first fire: spawns + writes the stamp
+                assert mock_popen.call_count == 1
+                assert _mine_stamp_path(cmd).exists()
+                _spawn_mine(cmd)  # second fire within window: debounced
+                assert mock_popen.call_count == 1
+
+
+def test_spawn_mine_no_debounce_when_env_unset(tmp_path):
+    """Default (env unset) preserves prior behaviour: no stamp, always spawns."""
+    pid_dir = tmp_path / "mine_pids"
+    cmd = ["mempalace", "mine", "/tmp/proj2", "--mode", "convos"]
+    with patch("mempalace.hooks_cli.STATE_DIR", tmp_path):
+        with patch("mempalace.hooks_cli._MINE_PID_DIR", pid_dir):
+            with patch("mempalace.hooks_cli.subprocess.Popen") as mock_popen:
+                from mempalace.hooks_cli import _mine_stamp_path, _spawn_mine
+
+                mock_popen.return_value.pid = 9999
+                _spawn_mine(cmd)
+                assert mock_popen.call_count == 1
+                assert not _mine_stamp_path(cmd).exists()
