@@ -468,3 +468,28 @@ class TestFileChunksLocked:
         assert dict(room_counts) == {}
         assert skipped is False
         assert col.batch_sizes == [2, 2, 1]
+
+
+def test_file_chunks_locked_writes_source_mtime(tmp_path):
+    """convos-mode drawers must carry source_mtime — the freshness SLA in the
+    status-writer reads MAX(source_mtime) per wing, and drawers without it
+    made the cursor-sessions wing read permanently stale (D-710 workspace)."""
+    from unittest.mock import MagicMock, patch
+
+    from mempalace.convo_miner import _file_chunks_locked
+
+    src = tmp_path / "rollout-x.jsonl"
+    src.write_text('{"role": "user"}\n', encoding="utf-8")
+    col = MagicMock()
+    col.get.return_value = {"ids": [], "metadatas": []}
+    chunks = [{"content": "hello world", "chunk_index": 0}]
+
+    with patch("mempalace.convo_miner.file_already_mined", return_value=False), \
+         patch("mempalace.convo_miner.assert_no_collisions"):
+        drawers, _counts, skipped = _file_chunks_locked(
+            col, str(src), chunks, "cursor-sessions", "technical", "agent", "verbatim"
+        )
+
+    assert not skipped and drawers == 1
+    meta = col.upsert.call_args.kwargs["metadatas"][0]
+    assert meta["source_mtime"] == src.stat().st_mtime

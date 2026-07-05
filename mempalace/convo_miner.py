@@ -416,6 +416,14 @@ def _file_chunks_locked(collection, source_file, chunks, wing, room, agent, extr
         # one filed_at per source file so all transcript drawers share an
         # ingest timestamp.
         filed_at = datetime.now().isoformat()
+        # source_mtime powers the freshness SLA (status-writer compares the
+        # newest indexed source mtime against the newest file on disk).
+        # convos-mode drawers historically omitted it, which made the
+        # cursor-sessions wing read permanently stale (D-710 workspace).
+        try:
+            source_mtime = os.path.getmtime(source_file)
+        except OSError:
+            source_mtime = None
         for batch_start in range(0, len(chunks), DRAWER_UPSERT_BATCH_SIZE):
             batch_docs: list = []
             batch_ids: list = []
@@ -442,6 +450,7 @@ def _file_chunks_locked(collection, source_file, chunks, wing, room, agent, extr
                         "extract_mode": extract_mode,
                         "normalize_version": NORMALIZE_VERSION,
                         "id_recipe": ID_RECIPE,
+                        **({"source_mtime": source_mtime} if source_mtime is not None else {}),
                     }
                 )
             assert_no_collisions(list(zip(batch_ids, batch_metas)), collection)
