@@ -1324,18 +1324,34 @@ def process_file(
 
     effective_cap = _resolve_max_chunks_per_file(max_chunks_per_file)
     if effective_cap > 0 and len(chunks) > effective_cap:
-        # Skip notice goes to stderr alongside the existing symlink-skip
-        # warning style (see ``scan_project``'s ``SKIP: <rel> (symlink)``
-        # line). This keeps ``mempalace mine ... > out.log 2> err.log``
-        # piping coherent: degraded outcomes on stderr, progress on stdout.
-        print(
-            f"  ! [skip] {filepath.name[:50]:50} produced {len(chunks)} chunks "
-            f"(> {effective_cap}); raise via --max-chunks-per-file or "
-            f"MEMPALACE_MAX_CHUNKS_PER_FILE (set 0 to disable), or add to "
-            f"SKIP_FILENAMES if this is a generated artifact",
-            file=sys.stderr,
-        )
-        return 0, room, "chunk_cap"
+        if os.environ.get("MEMPALACE_CHUNK_CAP_MODE", "skip") == "truncate-tail":
+            # Env-gated alternative to the whole-file skip below (same
+            # pattern as MEMPALACE_MINE_DEBOUNCE_SECS): keep the LAST
+            # ``effective_cap`` chunks. For conversation transcripts the
+            # tail carries the conclusions/closeout — the recall-valuable
+            # part — while the skip default silently drops the entire
+            # session (every modern agent session exceeds 300 chunks, so
+            # skip-mode starved session wings of ALL new content).
+            print(
+                f"  ! [cap] {filepath.name[:50]:50} produced {len(chunks)} "
+                f"chunks (> {effective_cap}); keeping the last "
+                f"{effective_cap} (MEMPALACE_CHUNK_CAP_MODE=truncate-tail)",
+                file=sys.stderr,
+            )
+            chunks = chunks[-effective_cap:]
+        else:
+            # Skip notice goes to stderr alongside the existing symlink-skip
+            # warning style (see ``scan_project``'s ``SKIP: <rel> (symlink)``
+            # line). This keeps ``mempalace mine ... > out.log 2> err.log``
+            # piping coherent: degraded outcomes on stderr, progress on stdout.
+            print(
+                f"  ! [skip] {filepath.name[:50]:50} produced {len(chunks)} chunks "
+                f"(> {effective_cap}); raise via --max-chunks-per-file or "
+                f"MEMPALACE_MAX_CHUNKS_PER_FILE (set 0 to disable), or add to "
+                f"SKIP_FILENAMES if this is a generated artifact",
+                file=sys.stderr,
+            )
+            return 0, room, "chunk_cap"
 
     if dry_run:
         print(f"    [DRY RUN] {filepath.name} -> room:{room} ({len(chunks)} drawers)")

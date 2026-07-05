@@ -2185,3 +2185,73 @@ def test_file_already_mined_handles_multiple_groups_under_one_source_file(tmp_pa
         "must iterate all groups for the source_file (mirroring the existing "
         "paginated pattern in the extract_mode-is-set branch)."
     )
+
+
+def test_process_file_chunk_cap_truncate_tail_mode(tmp_path, monkeypatch, capsys):
+    """MEMPALACE_CHUNK_CAP_MODE=truncate-tail keeps the LAST cap chunks and
+    proceeds instead of skipping the whole file. Regression guard for the
+    2026-07-05 finding (D-710 workspace): with skip-mode every modern agent
+    session (>300 chunks) was dropped entirely, starving session wings of
+    all new content since the cap shipped."""
+    from unittest.mock import MagicMock
+
+    from mempalace import miner
+
+    monkeypatch.setenv("MEMPALACE_CHUNK_CAP_MODE", "truncate-tail")
+    monkeypatch.delenv("MEMPALACE_MAX_CHUNKS_PER_FILE", raising=False)
+    monkeypatch.setattr(miner, "MAX_CHUNKS_PER_FILE", 5)
+    over_cap = [{"content": f"chunk {i}", "chunk_index": i} for i in range(7)]
+    monkeypatch.setattr(miner, "chunk_text", lambda content, source_file, **kwargs: over_cap)
+
+    source = tmp_path / "huge.jsonl"
+    source.write_text("payload\n" * 200, encoding="utf-8")
+    col = MagicMock()
+    col.get.return_value = {"ids": []}
+
+    drawers, _room, skip_reason = miner.process_file(
+        source,
+        tmp_path,
+        col,
+        "wing",
+        [{"name": "general", "description": "General"}],
+        "agent",
+        True,  # dry_run: count without upserting
+    )
+
+    assert skip_reason is None
+    assert drawers == 5  # last 5 of 7 kept
+    captured = capsys.readouterr()
+    assert "[cap]" in captured.err
+    assert "[skip]" not in captured.err
+
+
+def test_process_file_chunk_cap_default_still_skips(tmp_path, monkeypatch, capsys):
+    """Without the env gate the historical skip semantics are unchanged."""
+    from unittest.mock import MagicMock
+
+    from mempalace import miner
+
+    monkeypatch.delenv("MEMPALACE_CHUNK_CAP_MODE", raising=False)
+    monkeypatch.delenv("MEMPALACE_MAX_CHUNKS_PER_FILE", raising=False)
+    monkeypatch.setattr(miner, "MAX_CHUNKS_PER_FILE", 5)
+    over_cap = [{"content": f"chunk {i}", "chunk_index": i} for i in range(7)]
+    monkeypatch.setattr(miner, "chunk_text", lambda content, source_file, **kwargs: over_cap)
+
+    source = tmp_path / "huge.jsonl"
+    source.write_text("payload\n" * 200, encoding="utf-8")
+    col = MagicMock()
+    col.get.return_value = {"ids": []}
+
+    drawers, _room, skip_reason = miner.process_file(
+        source,
+        tmp_path,
+        col,
+        "wing",
+        [{"name": "general", "description": "General"}],
+        "agent",
+        False,
+    )
+
+    assert drawers == 0
+    assert skip_reason == "chunk_cap"
+    col.upsert.assert_not_called()
