@@ -28,7 +28,7 @@ from .palace import (
     get_collection,
     mine_lock,
     mine_palace_lock,
-    prefetch_mined_set,
+    prefetch_mined_mtimes,
 )
 
 logger = logging.getLogger("mempalace_mcp")
@@ -345,6 +345,14 @@ def detect_convo_room(content: str) -> str:
 # =============================================================================
 
 
+def _safe_mtime(path: Path) -> float:
+    """mtime that never raises — 0.0 for vanished files (sorts oldest)."""
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
 def scan_convos(convo_dir: str) -> list:
     """Find all potential conversation files.
 
@@ -603,6 +611,10 @@ def _mine_convos_impl(
     wing = _resolve_wing(convo_path, wing)
 
     files = scan_convos(convo_dir)
+    # Newest-first before applying the limit: os.walk order is arbitrary, so a
+    # small --limit window could starve fresh transcripts forever while
+    # re-checking the same already-filed old files every run (D-710 class).
+    files.sort(key=_safe_mtime, reverse=True)
     if limit > 0:
         files = files[:limit]
 
@@ -622,10 +634,10 @@ def _mine_convos_impl(
     # Bulk pre-fetch already-mined set in one paginated pass instead of
     # `len(files)` separate WHERE-source_file queries. On a 150k-drawer
     # palace each per-file query costs ~2s, so a 2000-file sweep used to
-    # spend >1h just deciding to skip. prefetch_mined_set() does the same
+    # spend >1h just deciding to skip. prefetch_mined_mtimes() does the same
     # decisions in a single scan; loop body becomes an O(1) set check.
-    mined_set: set[str] = (
-        prefetch_mined_set(collection, extract_mode=extract_mode) if not dry_run else set()
+    mined_mtimes: dict = (
+        prefetch_mined_mtimes(collection, extract_mode=extract_mode) if not dry_run else {}
     )
 
     total_drawers = 0
@@ -635,10 +647,16 @@ def _mine_convos_impl(
     for i, filepath in enumerate(files, 1):
         source_file = str(filepath)
 
-        # Skip if already filed at current NORMALIZE_VERSION
-        if not dry_run and source_file in mined_set:
-            files_skipped += 1
-            continue
+        # Skip if already filed at current NORMALIZE_VERSION — unless the file
+        # on disk is newer than the stored source_mtime (live transcripts are
+        # append-only; deterministic drawer IDs + upsert make re-mining
+        # idempotent for existing chunks). Stored mtime None = pre-D-710
+        # drawers with no mtime metadata -> legacy always-skip semantics.
+        if not dry_run and source_file in mined_mtimes:
+            stored_mtime = mined_mtimes[source_file]
+            if stored_mtime is None or _safe_mtime(filepath) <= stored_mtime + 1.0:
+                files_skipped += 1
+                continue
 
         # Normalize format
         try:

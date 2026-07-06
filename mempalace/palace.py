@@ -963,6 +963,52 @@ def bulk_check_mined(collection) -> dict[str, float]:
     return mined
 
 
+def prefetch_mined_mtimes(
+    collection, extract_mode: Optional[str] = None
+) -> dict[str, Optional[float]]:
+    """Bulk map of source_file -> newest stored source_mtime at current NORMALIZE_VERSION.
+
+    Same single paginated scan as prefetch_mined_set(), but keeps the stored
+    ``source_mtime`` so callers can re-mine files that grew after filing
+    (live session transcripts are append-only, not immutable). Value semantics:
+
+      - missing key: file never mined -> mine it
+      - value None: at least one current-version group has no stored
+        source_mtime (pre-D-710 drawers) -> legacy behavior, treat as filed
+      - value float: newest stored mtime; caller re-mines when the file on
+        disk is newer
+    """
+    mined: dict[str, Optional[float]] = {}
+    try:
+        total = collection.count()
+        offset = 0
+        while offset < total:
+            batch = collection.get(limit=1000, offset=offset, include=["metadatas"])
+            for meta in batch["metadatas"]:
+                meta = meta or {}
+                src = meta.get("source_file")
+                if not src:
+                    continue
+                if not _metadata_matches_extract_mode(meta, extract_mode):
+                    continue
+                version = meta.get("normalize_version", 1)
+                if version < NORMALIZE_VERSION:
+                    continue
+                mtime = meta.get("source_mtime")
+                if not isinstance(mtime, (int, float)):
+                    mined[src] = None  # unknown mtime wins: legacy skip semantics
+                elif src not in mined:
+                    mined[src] = float(mtime)
+                elif mined[src] is not None:
+                    mined[src] = max(mined[src], float(mtime))
+            if not batch["ids"]:
+                break
+            offset += len(batch["ids"])
+    except Exception:
+        logger.warning("prefetch_mined_mtimes: partial fetch, %d files loaded", len(mined))
+    return mined
+
+
 def prefetch_mined_set(collection, extract_mode: Optional[str] = None) -> set[str]:
     """Pre-fetch the set of source_files already mined at the current NORMALIZE_VERSION.
 

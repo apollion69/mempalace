@@ -2255,3 +2255,61 @@ def test_process_file_chunk_cap_default_still_skips(tmp_path, monkeypatch, capsy
     assert drawers == 0
     assert skip_reason == "chunk_cap"
     col.upsert.assert_not_called()
+
+
+def test_prefetch_mined_mtimes_grown_file_semantics():
+    """Grown transcripts re-mine; unchanged and legacy (no-mtime) files skip."""
+    from mempalace.palace import prefetch_mined_mtimes
+
+    tmpdir = tempfile.mkdtemp()
+    try:
+        palace_path = os.path.join(tmpdir, "palace")
+        os.makedirs(palace_path)
+        client = chromadb.PersistentClient(path=palace_path)
+        col = client.get_or_create_collection(
+            "mempalace_drawers", metadata={"hnsw:space": "cosine"}
+        )
+
+        fresh = os.path.join(tmpdir, "fresh.jsonl")
+        legacy = os.path.join(tmpdir, "legacy.jsonl")
+        col.add(
+            ids=["fresh-0", "legacy-0"],
+            documents=["fresh drawer", "legacy drawer"],
+            metadatas=[
+                {
+                    "source_file": fresh,
+                    "extract_mode": "exchange",
+                    "normalize_version": NORMALIZE_VERSION,
+                    "source_mtime": 1000.0,
+                },
+                {
+                    "source_file": legacy,
+                    "extract_mode": "exchange",
+                    "normalize_version": NORMALIZE_VERSION,
+                    # no source_mtime -> pre-D-710 drawer
+                },
+            ],
+        )
+
+        mtimes = prefetch_mined_mtimes(col, extract_mode="exchange")
+        assert mtimes[fresh] == 1000.0
+        assert mtimes[legacy] is None  # legacy always-skip semantics
+        assert "never-mined" not in mtimes
+
+        # Newest stored mtime wins across additive mining groups
+        col.add(
+            ids=["fresh-1"],
+            documents=["fresh drawer second pass"],
+            metadatas=[
+                {
+                    "source_file": fresh,
+                    "extract_mode": "exchange",
+                    "normalize_version": NORMALIZE_VERSION,
+                    "source_mtime": 2000.0,
+                }
+            ],
+        )
+        assert prefetch_mined_mtimes(col, extract_mode="exchange")[fresh] == 2000.0
+    finally:
+        del col, client
+        shutil.rmtree(tmpdir, ignore_errors=True)
