@@ -160,10 +160,13 @@ class Layer1:
             for _imp, meta, doc in entries:
                 source = Path(meta.get("source_file", "")).name if meta.get("source_file") else ""
 
-                # Truncate doc to keep L1 compact
+                # Truncate doc to keep L1 compact — on a word boundary, so the
+                # wake-up never surfaces mid-word fragments (D-760 audit: garbled
+                # snippets made link targets unrecoverable at resurface time).
                 snippet = doc.strip().replace("\n", " ")
                 if len(snippet) > 200:
-                    snippet = snippet[:197] + "..."
+                    cut = snippet[:200].rsplit(" ", 1)[0]
+                    snippet = (cut if cut else snippet[:197]) + "..."
 
                 entry_line = f"  - {snippet}"
                 if source:
