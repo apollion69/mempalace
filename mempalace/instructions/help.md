@@ -31,13 +31,6 @@ AI memory system. Store everything, find anything. Local, free, no API key.
 - mempalace_add_drawer -- Add a new memory (drawer)
 - mempalace_delete_drawer -- Delete a memory (drawer)
 
-### Knowledge Graph
-- mempalace_kg_query -- Query the knowledge graph
-- mempalace_kg_add -- Add a knowledge graph entry
-- mempalace_kg_invalidate -- Invalidate a knowledge graph entry
-- mempalace_kg_timeline -- View knowledge graph timeline
-- mempalace_kg_stats -- Knowledge graph statistics
-
 ### Navigation
 - mempalace_traverse -- Traverse the palace structure
 - mempalace_find_tunnels -- Find cross-wing connections

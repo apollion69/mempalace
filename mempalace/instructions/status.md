@@ -22,8 +22,6 @@ Keep the output concise -- use a brief summary format, not verbose tables.
 ## Step 3: Knowledge Graph Stats (MCP only)
 
 If MCP tools are available, also call:
-- mempalace_kg_stats -- for a knowledge graph overview (triple count, entity
-  count, relationship types)
 - mempalace_graph_stats -- for connectivity information (connected components,
   average connections per entity)
 
