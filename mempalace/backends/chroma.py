@@ -142,15 +142,8 @@ _HNSW_BLOAT_GUARD = {
 
 # Below this size, data_level0.bin is too small for a meaningful HNSW graph.
 # Used by _hnsw_link_lists_is_usable_for_payload (empty link_lists is fine
-# when data is trivially small) and _missing_dimensionality_appears_recoverable
-# (don't attempt recovery on segments with negligible data).
+# when data is trivially small).
 _HNSW_MISSING_METADATA_DATA_FLOOR = 1024
-_HNSW_MISSING_DIMENSIONALITY_MIN_RECOVERABLE_LABELS = 50_000
-# Chroma's configured sync_threshold is 50k for guarded collections, and the
-# read-only repair-status path treats up to 2 sync windows as ordinary flush
-# lag. Keep this pre-open quarantine guard aligned with that verdict so a
-# recoverable post-mine segment is not replaced by a one-element HNSW segment.
-_HNSW_MISSING_DIMENSIONALITY_MAX_RECOVERABLE_LABEL_GAP = 100_000
 
 
 def _validate_where(where: Optional[dict]) -> None:
@@ -344,20 +337,6 @@ def _segment_appears_healthy(seg_dir: str) -> bool:
         size = os.path.getsize(meta_path)
         if size < 16:
             return False
-        try:
-            persisted = _SafePersistentDataUnpickler.load(meta_path)
-            dimensionality, id_to_label = _persisted_metadata_fields(persisted)
-            if (
-                dimensionality is None
-                and isinstance(id_to_label, dict)
-                and id_to_label
-                and _missing_dimensionality_appears_recoverable(
-                    persisted, id_to_label, seg_dir
-                )
-            ):
-                return True
-        except Exception:
-            logger.debug("_segment_appears_healthy metadata parse failed", exc_info=True)
         with open(meta_path, "rb") as f:
             head = f.read(2)
             f.seek(-1, 2)  # last byte
@@ -921,48 +900,6 @@ def _persisted_metadata_fields(obj: object) -> tuple[object, object]:
     )
 
 
-def _missing_dimensionality_appears_recoverable(
-    persisted: object, id_to_label: dict, seg_dir: str
-) -> bool:
-    total = _persisted_metadata_value(persisted, "total_elements_added")
-    label_to_id = _persisted_metadata_value(persisted, "label_to_id")
-    data_path = os.path.join(seg_dir, "data_level0.bin")
-    link_path = os.path.join(seg_dir, "link_lists.bin")
-
-    if not isinstance(total, Integral) or isinstance(total, bool):
-        return False
-    if not isinstance(label_to_id, dict):
-        return False
-    try:
-        if not (
-            os.path.isfile(data_path)
-            and os.path.isfile(link_path)
-            and os.path.getsize(data_path) > _HNSW_MISSING_METADATA_DATA_FLOOR
-        ):
-            return False
-    except OSError:
-        return False
-    if not _hnsw_payload_appears_sane(seg_dir):
-        return False
-
-    label_count = len(id_to_label)
-    total_count = int(total)
-    if len(label_to_id) != label_count:
-        return False
-    if total_count != label_count:
-        label_gap = total_count - label_count
-        if (
-            label_count < _HNSW_MISSING_DIMENSIONALITY_MIN_RECOVERABLE_LABELS
-            or label_gap < 0
-            or label_gap > _HNSW_MISSING_DIMENSIONALITY_MAX_RECOVERABLE_LABEL_GAP
-        ):
-            return False
-    try:
-        return all(label_to_id.get(label) == item_id for item_id, label in id_to_label.items())
-    except TypeError:
-        return False
-
-
 def quarantine_invalid_hnsw_metadata(palace_path: str) -> list[str]:
     """Quarantine segment dirs whose ``index_metadata.pickle`` is unreadable or invalid.
 
@@ -1019,30 +956,12 @@ def quarantine_invalid_hnsw_metadata(palace_path: str) -> list[str]:
                 dimensionality, id_to_label = _persisted_metadata_fields(persisted)
                 if id_to_label is not None and not isinstance(id_to_label, dict):
                     reason = f"invalid id_to_label type {type(id_to_label).__name__}"
-                else:
-                    has_labels = bool(id_to_label)
-                    if (
-                        has_labels
-                        and dimensionality is None
-                        and not _missing_dimensionality_appears_recoverable(
-                            persisted, id_to_label, seg_dir
-                        )
-                    ):
-                        reason = (
-                            "labels present but dimensionality is missing or invalid "
-                            f"({dimensionality!r})"
-                        )
-                    elif (
-                        has_labels
-                        and dimensionality is not None
-                        and not _valid_dimensionality(dimensionality)
-                    ):
-                        reason = (
-                            "labels present but dimensionality is missing or invalid "
-                            f"({dimensionality!r})"
-                        )
-                    elif dimensionality is not None and not _valid_dimensionality(dimensionality):
-                        reason = f"invalid dimensionality {dimensionality!r}"
+                elif dimensionality is not None and not _valid_dimensionality(dimensionality):
+                    reason = f"invalid dimensionality {dimensionality!r}"
+                # dimensionality=None is the NORMAL on-disk state under chromadb
+                # >=1.5 Rust bindings (they never populate the Python-side field),
+                # so its absence is never corruption evidence. A heuristic here
+                # quarantined healthy multi-GB indexes daily for weeks (D-770 era).
 
         if reason is None:
             continue

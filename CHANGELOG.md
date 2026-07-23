@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ---
 
+## [3.4.2] — 2026-07-23
+
+### Fixes
+
+- **Remove the missing-dimensionality HNSW quarantine heuristic.** chromadb >=1.5 Rust bindings never populate `dimensionality` in `index_metadata.pickle`, so `dimensionality: None` is the normal healthy on-disk state — not corruption. The pre-open guard treated it as damage and renamed healthy segment dirs to `.corrupt-*` on every palace open once a collection had a delete gap and fewer than 50,000 labels, silently replacing a multi-GB index with an empty one (vector search dead 2026-07-22..23). The heuristic, its `_missing_dimensionality_appears_recoverable` escape hatch, and both size-floor constants are deleted; quarantine now fires only on evidence (unreadable pickle, wrong field types, invalid non-None dimensionality, payload-ratio insanity). Regression test pins the real-world kill shape (30,560 labels / 30,580 total).
+
+---
+
 ## [3.3.6] — 2026-05-24
 
 ### Features
