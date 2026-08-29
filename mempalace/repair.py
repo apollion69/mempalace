@@ -1105,6 +1105,75 @@ def extract_via_sqlite(palace_path: str, collection_name: str) -> Iterator[tuple
         conn.close()
 
 
+def _dir_bytes(path: str) -> int:
+    """Allocated bytes under ``path``, the number ENOSPC actually cares about."""
+    total = 0
+    for root, _dirs, files in os.walk(path):
+        for name in files:
+            try:
+                total += os.lstat(os.path.join(root, name)).st_blocks * 512
+            except OSError:
+                continue
+    return total
+
+
+def _require_free_space(dest_palace: str, source_palace: str, in_place: bool) -> Optional[str]:
+    """Refuse a rebuild that cannot possibly fit.
+
+    2026-08-28: an in-place rebuild on the 25 G ``/data/mempalace`` loop image ran for
+    1d 11h of CPU and died with "database disk image is malformed" during post-recovery
+    cleanup, because ``--archive-existing`` is mandatory here — the old palace is MOVED
+    aside and the new one is built beside it, so the volume must hold BOTH at once, plus
+    sqlite's temp files during VACUUM. Nothing checked that before starting, and the
+    filesystem filled three times in five days.
+
+    In-place needs 2x the palace (archive + new build) plus a VACUUM allowance; a
+    cross-palace rebuild only needs 1x at the destination. Returns an error string when
+    the check fails, or None when there is room.
+
+    Override with MEMPALACE_SKIP_SPACE_CHECK=1 — deliberately awkward, because the whole
+    point is that the caller who thinks they know better is usually the one who fills it.
+    """
+    if os.environ.get("MEMPALACE_SKIP_SPACE_CHECK") == "1":
+        print("  Warning: MEMPALACE_SKIP_SPACE_CHECK=1 — free-space preflight bypassed.", flush=True)
+        return None
+
+    measured = source_palace if os.path.isdir(source_palace) else dest_palace
+    palace_bytes = _dir_bytes(measured)
+
+    # VACUUM writes a full second copy of the database file before swapping it in.
+    try:
+        db_bytes = os.lstat(os.path.join(measured, "chroma.sqlite3")).st_blocks * 512
+    except OSError:
+        db_bytes = 0
+
+    multiplier = 2 if in_place else 1
+    needed = palace_bytes * multiplier + db_bytes
+
+    target = dest_palace if os.path.isdir(dest_palace) else os.path.dirname(dest_palace) or "."
+    try:
+        st = os.statvfs(target)
+    except OSError as exc:
+        return f"cannot stat the destination filesystem at {target}: {exc}"
+    free = st.f_bavail * st.f_frsize
+
+    gb = 1024 ** 3
+    if free < needed:
+        return (
+            f"not enough free space for a {'in-place' if in_place else 'cross-palace'} rebuild.\n"
+            f"  palace={palace_bytes / gb:.1f}G  needed={needed / gb:.1f}G  "
+            f"free={free / gb:.1f}G  on {target}\n"
+            f"  In-place rebuild archives the existing palace before building the new one, so "
+            f"both exist at once. Free space or grow the volume, then retry."
+        )
+
+    print(
+        f"  Space preflight: need {needed / gb:.1f}G, have {free / gb:.1f}G free on {target}",
+        flush=True,
+    )
+    return None
+
+
 def rebuild_from_sqlite(
     source_palace: str,
     dest_palace: str,
@@ -1234,6 +1303,11 @@ def rebuild_from_sqlite(
                 flush=True,
             )
             return {}
+
+    space_error = _require_free_space(dest_palace, source_palace, in_place)
+    if space_error:
+        print(f"\n  Refusing to rebuild: {space_error}", flush=True)
+        return {}
 
     archive_path: Optional[str] = None
     if in_place:
